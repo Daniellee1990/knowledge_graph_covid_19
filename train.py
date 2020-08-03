@@ -13,6 +13,10 @@ import util
 if __name__ == "__main__":
   config = util.initialize_from_env()
 
+  #for key in config:
+  #  print('test', key)
+
+  """
   report_frequency = config["report_frequency"]
   eval_frequency = config["eval_frequency"]
 
@@ -60,3 +64,4 @@ if __name__ == "__main__":
         writer.add_summary(util.make_summary({"max_eval_f1": max_f1}), tf_global_step)
 
         print("[{}] evaL_f1={:.2f}, max_f1={:.2f}".format(tf_global_step, eval_f1, max_f1))
+  """

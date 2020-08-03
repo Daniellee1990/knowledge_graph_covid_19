@@ -14,7 +14,7 @@ import tensorflow_hub as hub
 import h5py
 
 import util
-import coref_ops
+#import coref_ops
 import conll
 import metrics
 
@@ -73,6 +73,7 @@ class EntityModel(object):
   def start_enqueue_thread(self, session):
     with open(self.config["train_path"]) as f:
       train_examples = [json.loads(jsonline) for jsonline in f.readlines()]
+    
     def _enqueue_loop():
       while True:
         random.shuffle(train_examples)
@@ -80,6 +81,7 @@ class EntityModel(object):
           tensorized_example = self.tensorize_example(example, is_training=True)
           feed_dict = dict(zip(self.queue_input_tensors, tensorized_example))
           session.run(self.enqueue_op, feed_dict=feed_dict)
+    
     enqueue_thread = threading.Thread(target=_enqueue_loop)
     enqueue_thread.daemon = True
     enqueue_thread.start()
