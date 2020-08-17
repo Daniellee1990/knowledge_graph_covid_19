@@ -67,7 +67,7 @@ def save_relations(entity_relations, name='entity_relations'):
 
 file_dir = 'data/cord-19_expertsystem_mesh_20200501/arxiv/pdf_json'
 entity_types, entity_relations = {}, {}
-limit = 2
+limit = 3
 count = 0
 
 for folder, _, files in os.walk(file_dir):
