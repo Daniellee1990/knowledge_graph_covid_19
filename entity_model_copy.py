@@ -150,3 +150,51 @@ class EntityModel:
 
         return tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
             text_len, speaker_ids, genre, is_training, gold_starts, gold_ends, cluster_ids
+    
+    def get_predictions_and_loss(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
+        text_len, speaker_ids, genre, is_training, gold_starts, gold_ends, cluster_ids):
+        
+        self.dropout = self.get_dropout(self.config["dropout_rate"], is_training)
+        self.lexical_dropout = self.get_dropout(self.config["lexical_dropout_rate"], is_training)
+        self.lstm_dropout = self.get_dropout(self.config["lstm_dropout_rate"], is_training)
+
+        num_sentences = tf.shape(context_word_emb)[0]
+        max_sentence_length = tf.shape(context_word_emb)[1]
+
+        # embeddings
+        # glove embedding + char embedding + elmo embedding?
+        context_emb_list = [context_word_emb]
+        head_emb_list = [head_word_emb]
+
+        # get character embedding
+        if self.config["char_embedding_size"] > 0:
+            char_emb = tf.gather(tf.get_variable("char_embeddings", [len(self.char_dict), self.config["char_embedding_size"]]), \
+                char_index) # [num_sentences, max_sentence_length, max_word_length, char_embedding_size]
+            flattened_char_emb = tf.reshape(char_emb, [num_sentences * max_sentence_length, util.shape(char_emb, 2), \
+                util.shape(char_emb, 3)]) # [num_sentences * max_sentence_length, max_word_length, char_embedding_size]
+            flattened_aggregated_char_emb = self.cnn(flattened_char_emb, self.config["filter_widths"], self.config["filter_size"]) 
+            # [num_sentences * max_sentence_length, emb]
+            aggregated_char_emb = tf.reshape(flattened_aggregated_char_emb, [num_sentences, max_sentence_length, \
+                util.shape(flattened_aggregated_char_emb, 1)]) # [num_sentences, max_sentence_length, emb]
+            
+            context_emb_list.append(aggregated_char_emb)
+            head_emb_list.append(aggregated_char_emb)
+    
+    def cnn(self, inputs, filter_sizes, num_filters):
+        """ concatenate 3 conv1d layer output
+        in_channel, out_channel
+        """
+        num_words = shape(inputs, 0)
+        num_chars = shape(inputs, 1)
+        input_size = shape(inputs, 2)
+        outputs = []
+        for i, filter_size in enumerate(filter_sizes):
+            with tf.variable_scope("conv_{}".format(i)):
+                w = tf.get_variable("w", [filter_size, input_size, num_filters])
+                b = tf.get_variable("b", [num_filters])
+            conv = tf.nn.conv1d(inputs, w, stride=1, padding="VALID") # [num_words, num_chars - filter_size, num_filters]
+            h = tf.nn.relu(tf.nn.bias_add(conv, b)) # [num_words, num_chars - filter_size, num_filters]
+            pooled = tf.reduce_max(h, 1) # [num_words, num_filters]
+            outputs.append(pooled)
+        
+        return tf.concat(outputs, 1) # [num_words, num_filters * len(filter_sizes)]
