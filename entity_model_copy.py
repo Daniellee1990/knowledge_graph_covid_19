@@ -166,7 +166,7 @@ class EntityModel:
         context_emb_list = [context_word_emb]
         head_emb_list = [head_word_emb]
 
-        # get character embedding
+        # character embedding
         if self.config["char_embedding_size"] > 0:
             char_emb = tf.gather(tf.get_variable("char_embeddings", [len(self.char_dict), self.config["char_embedding_size"]]), \
                 char_index) # [num_sentences, max_sentence_length, max_word_length, char_embedding_size]
@@ -179,7 +179,202 @@ class EntityModel:
             
             context_emb_list.append(aggregated_char_emb)
             head_emb_list.append(aggregated_char_emb)
+        
+        # ELMo embedding
+        # lm_emb: [num_sentence, max_sentence_length, lm_size, lm_layers]
+        lm_emb_size = util.shape(lm_emb, 2)
+        lm_num_layers = util.shape(lm_emb, 3)
+        with tf.variable_scope("lm_aggregation"):
+            self.lm_weights = tf.nn.softmax(tf.get_variable("lm_scores", [lm_num_layers], initializer=tf.constant_initializer(0.0)))
+            self.lm_scaling = tf.get_variable("lm_scaling", [], initializer=tf.constant_initializer(1.0))
+        flattened_lm_emb = tf.reshape(lm_emb, [num_sentences * max_sentence_length * lm_emb_size, lm_num_layers])
+        # [num_sentences * max_sentence_length * lm_emb_size, lm_emb_layers]
+        flattened_aggregated_lm_emb = tf.matmul(flattened_lm_emb, tf.expand_dims(self.lm_weights, 1)) 
+        # [num_sentences * max_sentence_length * emb, 1]
+        aggregated_lm_emb = tf.reshape(flattened_aggregated_lm_emb, [num_sentences, max_sentence_length, lm_emb_size])
+        aggregated_lm_emb *= self.lm_scaling
+        context_emb_list.append(aggregated_lm_emb)
+
+        # concatenate embeddings
+        context_emb = tf.concat(context_emb_list, 2) # [num_sentences, max_sentence_length, emb]
+        head_emb = tf.concat(head_emb_list, 2) # [num_sentences, max_sentence_length, emb]
+        # dropout
+        context_emb = tf.nn.dropout(context_emb, self.lexical_dropout) # [num_sentences, max_sentence_length, emb]
+        head_emb = tf.nn.dropout(head_emb, self.lexical_dropout) # [num_sentences, max_sentence_length, emb]
+
+        # embedding part done
+
+        # sequence_mask:
+        # orignal tensor t[d_1, d_2,..., d_n]
+        # mask[i_1, i_2, ..., i_n, j] = t[i_1, i_2, ..., i_n] < j
+        text_len_mask = tf.sequence_mask(text_len, maxlen=max_sentence_length) # [num_sentence, max_sentence_length]
+
+        # bi-directional lstm
+        # every word gets an embedding
+        context_outputs = self.lstm_contextualize(context_emb, text_len, text_len_mask) # [num_words, emb]
+        num_words = util.shape(context_outputs, 0)
+
+        genre_emb = tf.gather(tf.get_variable("genre_embeddings", [len(self.genres), self.config["feature_size"]]), genre) # [emb]
+
+        # handle spans
+        sentence_indices = tf.tile(tf.expand_dims(tf.range(num_sentences), 1), [1, max_sentence_length]) # [num_sentences, max_sentence_length]
+        flattened_sentence_indices = self.flatten_emb_by_sentence(sentence_indices, text_len_mask) # [num_words]
+        flattened_head_emb = self.flatten_emb_by_sentence(head_emb, text_len_mask) # [num_words]
+
+        candidate_starts = tf.tile(tf.expand_dims(tf.range(num_words), 1), [1, self.max_span_width]) 
+        # [num_words, max_span_width]
+        candidate_ends = candidate_starts + tf.expand_dims(tf.range(self.max_span_width), 0) 
+        # [num_words, max_span_width]
+        candidate_start_sentence_indices = tf.gather(flattened_sentence_indices, candidate_starts) 
+        # [num_words, max_span_width]
+        candidate_end_sentence_indices = tf.gather(flattened_sentence_indices, tf.minimum(candidate_ends, num_words - 1)) 
+        # [num_words, max_span_width]
+        
+        # candidate spans must come from the same sentence
+        candidate_mask = tf.logical_and(candidate_ends < num_words, tf.equal(candidate_start_sentence_indices, candidate_end_sentence_indices)) 
+        # [num_words, max_span_width]
+        flattened_candidate_mask = tf.reshape(candidate_mask, [-1]) # [num_words * max_span_width]
+        candidate_starts = tf.boolean_mask(tf.reshape(candidate_starts, [-1]), flattened_candidate_mask) # [num_candidates]
+        candidate_ends = tf.boolean_mask(tf.reshape(candidate_ends, [-1]), flattened_candidate_mask) # [num_candidates]
+        candidate_sentence_indices = tf.boolean_mask(tf.reshape(candidate_start_sentence_indices, [-1]), flattened_candidate_mask) 
+        # [num_candidates]
+
+        candidate_cluster_ids = self.get_candidate_labels(candidate_starts, candidate_ends, gold_starts, gold_ends, cluster_ids) 
+        # [num_candidates]
+
+        candidate_span_emb = self.get_span_emb(flattened_head_emb, context_outputs, candidate_starts, candidate_ends) # [num_candidates, emb]
+        candidate_mention_scores =  self.get_mention_scores(candidate_span_emb) # [num_candidates, 1]
+        candidate_mention_scores = tf.squeeze(candidate_mention_scores, 1) # [num_candidates]
+
+    def lstm_contextualize(self, text_emb, text_len, text_len_mask):
+        """ bi-directional lstm nn
+        Args:
+            text_emb: [num_sentences, max_sentence_length, emb]
+            text_len: [num_sentences], length of every sentence
+            text_len_mask: [num_sentence, max_sentence_length]
+        Returns:
+
+        """
+        num_sentences = tf.shape(text_emb)[0]
+        current_inputs = text_emb # [num_sentences, max_sentence_length, emb]
+
+        for layer in range(self.config["contextualization_layers"]):
+            with tf.variable_scope("layer_{}".format(layer)):
+                with tf.variable_scope("fw_cell"):
+                    cell_fw = util.CustomLSTMCell(self.config["contextualization_size"], num_sentences, self.lstm_dropout)
+                with tf.variable_scope("bw_cell"):
+                    cell_bw = util.CustomLSTMCell(self.config["contextualization_size"], num_sentences, self.lstm_dropout)
+                state_fw = tf.contrib.rnn.LSTMStateTuple(tf.tile(cell_fw.initial_state.c, [num_sentences, 1]), \
+                    tf.tile(cell_fw.initial_state.h, [num_sentences, 1]))
+                state_bw = tf.contrib.rnn.LSTMStateTuple(tf.tile(cell_bw.initial_state.c, [num_sentences, 1]), \
+                    tf.tile(cell_bw.initial_state.h, [num_sentences, 1]))
+
+                (fw_outputs, bw_outputs), _ = tf.nn.bidirectional_dynamic_rnn(
+                    cell_fw=cell_fw,
+                    cell_bw=cell_bw,
+                    inputs=current_inputs,
+                    sequence_length=text_len,
+                    initial_state_fw=state_fw,
+                    initial_state_bw=state_bw
+                )
+
+                text_outputs = tf.concat([fw_outputs, bw_outputs], 2) # [num_sentences, max_sentence_length, emb]
+                text_outputs = tf.nn.dropout(text_outputs, self.lstm_dropout)
+                if layer > 0:
+                    highway_gates = tf.sigmoid(util.projection(text_outputs, util.shape(text_outputs, 2))) 
+                    # [num_sentences, max_sentence_length, emb]
+                    text_outputs = highway_gates * text_outputs + (1 - highway_gates) * current_inputs
+                
+                current_inputs = text_outputs
+
+        return self.flatten_emb_by_sentence(text_outputs, text_len_mask)
     
+    def flatten_emb_by_sentence(self, emb, text_len_mask):
+        num_sentences = tf.shape(emb)[0]
+        max_sentence_length = tf.shape(emb)[1]
+
+        emb_rank = len(emb.get_shape())
+        if emb_rank  == 2:
+            flattened_emb = tf.reshape(emb, [num_sentences * max_sentence_length])
+        elif emb_rank == 3:
+            flattened_emb = tf.reshape(emb, [num_sentences * max_sentence_length, util.shape(emb, 2)])
+        else:
+            raise ValueError("Unsupported rank: {}".format(emb_rank))
+        
+        return tf.boolean_mask(flattened_emb, tf.reshape(text_len_mask, [num_sentences * max_sentence_length]))
+
+    def get_candidate_labels(self, candidate_starts, candidate_ends, labeled_starts, labeled_ends, labels):
+        same_start = tf.equal(tf.expand_dims(labeled_starts, 1), tf.expand_dims(candidate_starts, 0)) 
+        # [num_labeled, num_candidates]
+        same_end = tf.equal(tf.expand_dims(labeled_ends, 1), tf.expand_dims(candidate_ends, 0)) 
+        # [num_labeled, num_candidates]
+        same_span = tf.logical_and(same_start, same_end) 
+        # [num_labeled, num_candidates]
+        candidate_labels = tf.matmul(tf.expand_dims(labels, 0), tf.to_int32(same_span)) 
+        # [1, num_candidates]
+        candidate_labels = tf.squeeze(candidate_labels, 0) 
+        # [num_candidates]
+        return candidate_labels
+
+    def get_span_emb(self, head_emb, context_outputs, span_starts, span_ends):
+        """
+        Args:
+            head_emb: [num_words, emb],
+            context_outputs: [num_words, emb],
+            span_starts: [num_candidates], word index
+            span_ends: [num_candidates], word index
+        Returns:
+            span_emb: [num_candidates, emb], span embedding
+        """
+        span_emb_list = []
+
+        span_start_emb = tf.gather(context_outputs, span_starts) # [num_candidates, emb]
+        span_emb_list.append(span_start_emb)
+
+        span_end_emb = tf.gather(context_outputs, span_ends) # [num_candidates, emb]
+        span_emb_list.append(span_end_emb)
+
+        span_width = 1 + span_ends - span_starts # [num_candidates], with of every span
+
+        if self.config["use_features"]:
+            # span length feature
+            span_width_index = span_width - 1 # [num_candidates]
+            span_width_emb = tf.gather(tf.get_variable("span_width_embeddings", \
+                [self.config["max_span_width"], self.config["feature_size"]]), span_width_index) # [num_candidates, emb]
+            span_width_emb = tf.nn.dropout(span_width_emb, self.dropout)
+            span_emb_list.append(span_width_emb)
+
+        if self.config["model_heads"]:
+            span_indices = tf.expand_dims(tf.range(self.config["max_span_width"]), 0) + \
+                tf.expand_dims(span_starts, 1) # [num_candidates, max_span_width]
+            span_indices = tf.minimum(util.shape(context_outputs, 0) - 1, span_indices) # [num_candidates, max_span_width]
+            span_text_emb = tf.gather(head_emb, span_indices) # [num_candidates, max_span_width, emb]
+            with tf.variable_scope("head_scores"):
+                self.head_scores = util.projection(context_outputs, 1) # [num_words, 1]
+            span_head_scores = tf.gather(self.head_scores, span_indices) # [num_candidates, max_span_width, 1]
+            span_mask = tf.expand_dims(tf.sequence_mask(span_width, self.config["max_span_width"], dtype=tf.float32), 2) 
+            # [num_candidates, max_span_width, 1]
+            span_head_scores += tf.log(span_mask) # [num_candidates, max_span_width, 1]
+            span_attention = tf.nn.softmax(span_head_scores, 1) # [num_candidates, max_span_width, 1]
+            span_head_emb = tf.reduce_sum(span_attention * span_text_emb, 1) # [num_candidates, emb]
+            span_emb_list.append(span_head_emb)
+
+        span_emb = tf.concat(span_emb_list, 1) # [num_candidates, emb]
+        return span_emb # [num_candidates, emb]
+    
+    def get_mention_scores(self, span_emb):
+        """
+        Args:
+            span_emb: [num_candidates, emb]
+        Returns:
+            span_mention_scores: [num_candidates, 1], span mention score
+        """
+        with tf.variable_scope("mention_scores"):
+            return util.ffnn(span_emb, self.config["ffnn_depth"], self.config["ffnn_size"], 1, self.dropout) # [k, 1]
+
+    def get_dropout(self, dropout_rate, is_training):
+        return 1 - (tf.to_float(is_training) * dropout_rate)
+
     def cnn(self, inputs, filter_sizes, num_filters):
         """ concatenate 3 conv1d layer output
         in_channel, out_channel
