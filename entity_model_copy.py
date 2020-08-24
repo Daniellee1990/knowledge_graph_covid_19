@@ -14,7 +14,7 @@ import tensorflow_hub as hub
 import h5py
 
 import util
-#import coref_ops
+import coref_ops
 import conll
 import metrics
 
@@ -36,7 +36,59 @@ class EntityModel:
         self.lm_layers = self.config["lm_layers"]
         self.lm_size = self.config["lm_size"]
         self.eval_data = None # Load eval data lazily.
+
+        input_props = []
+        input_props.append((tf.string, [None, None])) # Tokens.
+        input_props.append((tf.float32, [None, None, self.context_embeddings.size])) # Context embeddings.
+        input_props.append((tf.float32, [None, None, self.head_embeddings.size])) # Head embeddings.
+        input_props.append((tf.float32, [None, None, self.lm_size, self.lm_layers])) # LM embeddings.
+        input_props.append((tf.int32, [None, None, None])) # Character indices.
+        input_props.append((tf.int32, [None])) # Text lengths.
+        input_props.append((tf.int32, [None])) # Speaker IDs.
+        input_props.append((tf.int32, [])) # Genre.
+        input_props.append((tf.bool, [])) # Is training.
+        input_props.append((tf.int32, [None])) # Gold starts.
+        input_props.append((tf.int32, [None])) # Gold ends.
+        input_props.append((tf.int32, [None])) # Cluster ids.
+
+        self.queue_input_tensors = [tf.placeholder(dtype, shape) for dtype, shape in input_props]
+        dtypes, shapes = zip(*input_props)
+        queue = tf.PaddingFIFOQueue(capacity=10, dtypes=dtypes, shapes=shapes)
+        self.enqueue_op = queue.enqueue(self.queue_input_tensors)
+        self.input_tensors = queue.dequeue()
+
+        self.predictions, self.loss = self.get_predictions_and_loss(*self.input_tensors)
+        self.global_step = tf.Variable(0, name="global_step", trainable=False)
+        self.reset_global_step = tf.assign(self.global_step, 0)
+        learning_rate = tf.train.exponential_decay(self.config["learning_rate"], self.global_step,
+                                                self.config["decay_frequency"], self.config["decay_rate"], staircase=True)
+        trainable_params = tf.trainable_variables()
+        gradients = tf.gradients(self.loss, trainable_params)
+        gradients, _ = tf.clip_by_global_norm(gradients, self.config["max_gradient_norm"])
+        optimizers = {
+            "adam" : tf.train.AdamOptimizer,
+            "sgd" : tf.train.GradientDescentOptimizer
+        }
+        optimizer = optimizers[self.config["optimizer"]](learning_rate)
+        self.train_op = optimizer.apply_gradients(zip(gradients, trainable_params), global_step=self.global_step)
     
+    def start_enqueue_thread(self, session):
+        # read literatures one by one
+        with open(self.config["train_path"]) as f:
+            train_examples = [json.loads(jsonline) for jsonline in f.readlines()]
+    
+        def _enqueue_loop():
+            while True:
+                random.shuffle(train_examples)
+                for example in train_examples:
+                    tensorized_example = self.tensorize_example(example, is_training=True)
+                    feed_dict = dict(zip(self.queue_input_tensors, tensorized_example))
+                    session.run(self.enqueue_op, feed_dict=feed_dict)
+    
+        enqueue_thread = threading.Thread(target=_enqueue_loop)
+        enqueue_thread.daemon = True
+        enqueue_thread.start()
+
     def load_lm_embeddings(self, doc_key):
         """ get ELMo embeddings
         """
@@ -246,6 +298,82 @@ class EntityModel:
         candidate_mention_scores =  self.get_mention_scores(candidate_span_emb) # [num_candidates, 1]
         candidate_mention_scores = tf.squeeze(candidate_mention_scores, 1) # [num_candidates]
 
+        # filter out part of spans
+        k = tf.to_int32(tf.floor(tf.to_float(tf.shape(context_outputs)[0]) * self.config["top_span_ratio"]))
+        top_span_indices = coref_ops.extract_spans(
+            tf.expand_dims(candidate_mention_scores, 0),
+            tf.expand_dims(candidate_starts, 0),
+            tf.expand_dims(candidate_ends, 0),
+            tf.expand_dims(k, 0),
+            util.shape(context_outputs, 0),
+            True) # [1, k]
+        
+        top_span_indices.set_shape([1, None])
+        top_span_indices = tf.squeeze(top_span_indices, 0) # [k]
+
+        top_span_starts = tf.gather(candidate_starts, top_span_indices) # [k]
+        top_span_ends = tf.gather(candidate_ends, top_span_indices) # [k]
+        top_span_emb = tf.gather(candidate_span_emb, top_span_indices) # [k, emb]
+        top_span_cluster_ids = tf.gather(candidate_cluster_ids, top_span_indices) # [k]
+        top_span_mention_scores = tf.gather(candidate_mention_scores, top_span_indices) # [k]
+        top_span_sentence_indices = tf.gather(candidate_sentence_indices, top_span_indices) # [k]
+        top_span_speaker_ids = tf.gather(speaker_ids, top_span_starts) # [k]
+
+        # check antecedents
+        c = tf.minimum(self.config["max_top_antecedents"], k)
+        if self.config["coarse_to_fine"]:
+            top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
+                self.coarse_to_fine_pruning(top_span_emb, top_span_mention_scores, c)
+        else:
+            top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
+                self.distance_pruning(top_span_emb, top_span_mention_scores, c)
+        
+        dummy_scores = tf.zeros([k, 1]) # [k, 1]
+        for i in range(self.config["coref_depth"]):
+            with tf.variable_scope("coref_layer", reuse=(i > 0)):
+                top_antecedent_emb = tf.gather(top_span_emb, top_antecedents) # [k, c, emb]
+                top_slow_antecedent_scores = self.get_slow_antecedent_scores(top_span_emb, top_antecedents, top_antecedent_emb, \
+                        top_antecedent_offsets, top_span_speaker_ids, genre_emb) # [k, c]
+                top_antecedent_scores = top_fast_antecedent_scores + top_slow_antecedent_scores # [k, c]
+                
+                top_antecedent_weights = tf.nn.softmax(tf.concat([dummy_scores, top_antecedent_scores], 1)) # [k, c + 1]
+                top_antecedent_emb = tf.concat([tf.expand_dims(top_span_emb, 1), top_antecedent_emb], 1) # [k, c + 1, emb]
+                attended_span_emb = tf.reduce_sum(tf.expand_dims(top_antecedent_weights, 2) * top_antecedent_emb, 1) # [k, emb]
+                with tf.variable_scope("f"):
+                    f = tf.sigmoid(util.projection(tf.concat([top_span_emb, attended_span_emb], 1), \
+                        util.shape(top_span_emb, -1))) # [k, emb]
+                    top_span_emb = f * attended_span_emb + (1 - f) * top_span_emb # [k, emb]
+
+        top_antecedent_scores = tf.concat([dummy_scores, top_antecedent_scores], 1) # [k, c + 1]
+
+        # get candidates label
+        top_antecedent_labels = self.get_antecedent_labels(top_span_cluster_ids, top_antecedents, top_antecedents_mask)
+        
+        loss = self.softmax_loss(top_antecedent_scores, top_antecedent_labels) # [k]
+        loss = tf.reduce_sum(loss) # []
+
+        return [candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends, \
+            top_antecedents, top_antecedent_scores], loss
+
+    def get_antecedent_labels(self, top_span_cluster_ids, top_antecedents, top_antecedents_mask):
+        """
+        Args:
+            top_span_cluster_ids: [k], cluster of spans
+            top_antecedents: [k, c], index of antecedents for every span
+            top_antecedents_mask: [k, c], pair validation indicator
+        Returns:
+            top_antecedent_labels: [k, c+1]
+        """
+        top_antecedent_cluster_ids = tf.gather(top_span_cluster_ids, top_antecedents) # [k, c]
+        top_antecedent_cluster_ids += tf.to_int32(tf.log(tf.to_float(top_antecedents_mask))) # [k, c]
+        same_cluster_indicator = tf.equal(top_antecedent_cluster_ids, tf.expand_dims(top_span_cluster_ids, 1)) # [k, c]
+        non_dummy_indicator = tf.expand_dims(top_span_cluster_ids > 0, 1) # [k, 1]
+        pairwise_labels = tf.logical_and(same_cluster_indicator, non_dummy_indicator) # [k, c]
+        dummy_labels = tf.logical_not(tf.reduce_any(pairwise_labels, 1, keepdims=True)) # [k, 1]
+        top_antecedent_labels = tf.concat([dummy_labels, pairwise_labels], 1) # [k, c + 1]
+
+        return top_antecedent_labels
+
     def lstm_contextualize(self, text_emb, text_len, text_len_mask):
         """ bi-directional lstm nn
         Args:
@@ -375,6 +503,90 @@ class EntityModel:
     def get_dropout(self, dropout_rate, is_training):
         return 1 - (tf.to_float(is_training) * dropout_rate)
 
+    def coarse_to_fine_pruning(self, top_span_emb, top_span_mention_scores, c):
+        """
+        Args:
+            top_span_emb: [k, emb]
+            top_span_mention_scores: [k], mention scores
+            c: top number
+        """
+        k = util.shape(top_span_emb, 0)
+        top_span_range = tf.range(k) # [k]
+        antecedent_offsets = tf.expand_dims(top_span_range, 1) - tf.expand_dims(top_span_range, 0) # [k, k]
+        antecedents_mask = antecedent_offsets >= 1 # [k, k]
+        fast_antecedent_scores = tf.expand_dims(top_span_mention_scores, 1) + tf.expand_dims(top_span_mention_scores, 0) # [k, k]
+        fast_antecedent_scores += tf.log(tf.to_float(antecedents_mask)) # [k, k]
+        fast_antecedent_scores += self.get_fast_antecedent_scores(top_span_emb) # [k, k]
+
+        _, top_antecedents = tf.nn.top_k(fast_antecedent_scores, c, sorted=False) # [k, c]
+        top_antecedents_mask = self.batch_gather(antecedents_mask, top_antecedents) # [k, c]
+        top_fast_antecedent_scores = self.batch_gather(fast_antecedent_scores, top_antecedents) # [k, c]
+        top_antecedent_offsets = self.batch_gather(antecedent_offsets, top_antecedents) # [k, c]
+        return top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets
+
+    def distance_pruning(self, top_span_emb, top_span_mention_scores, c):
+        k = util.shape(top_span_emb, 0)
+        top_antecedent_offsets = tf.tile(tf.expand_dims(tf.range(c) + 1, 0), [k, 1]) # [k, c]
+        raw_top_antecedents = tf.expand_dims(tf.range(k), 1) - top_antecedent_offsets # [k, c]
+        top_antecedents_mask = raw_top_antecedents >= 0 # [k, c]
+        top_antecedents = tf.maximum(raw_top_antecedents, 0) # [k, c]
+
+        top_fast_antecedent_scores = tf.expand_dims(top_span_mention_scores, 1) + tf.gather(top_span_mention_scores, top_antecedents) # [k, c]
+        top_fast_antecedent_scores += tf.log(tf.to_float(top_antecedents_mask)) # [k, c]
+        return top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets
+
+    def get_fast_antecedent_scores(self, top_span_emb):
+        with tf.variable_scope("src_projection"):
+            source_top_span_emb = tf.nn.dropout(util.projection(top_span_emb, util.shape(top_span_emb, -1)), self.dropout) # [k, emb]
+        target_top_span_emb = tf.nn.dropout(top_span_emb, self.dropout) # [k, emb]
+        return tf.matmul(source_top_span_emb, target_top_span_emb, transpose_b=True) # [k, k]
+
+    def get_slow_antecedent_scores(self, top_span_emb, top_antecedents, top_antecedent_emb, \
+        top_antecedent_offsets, top_span_speaker_ids, genre_emb):
+        """
+        Args:
+            top_span_emb: [k, emb],
+            top_antecedents: [k, c],
+            top_antecedent_emb: [k, c, emb],
+            top_antecedent_offsets: [k, c],
+            top_span_speaker_ids: [k],
+            genre_emb: genre embedding
+        """
+        k = util.shape(top_span_emb, 0)
+        c = util.shape(top_antecedents, 1)
+
+        feature_emb_list = []
+
+        if self.config["use_metadata"]:
+            top_antecedent_speaker_ids = tf.gather(top_span_speaker_ids, top_antecedents) # [k, c]
+            same_speaker = tf.equal(tf.expand_dims(top_span_speaker_ids, 1), top_antecedent_speaker_ids) # [k, c]
+            speaker_pair_emb = tf.gather(tf.get_variable("same_speaker_emb", [2, self.config["feature_size"]]), \
+                tf.to_int32(same_speaker)) # [k, c, emb]
+            feature_emb_list.append(speaker_pair_emb)
+
+            tiled_genre_emb = tf.tile(tf.expand_dims(tf.expand_dims(genre_emb, 0), 0), [k, c, 1]) # [k, c, emb]
+            feature_emb_list.append(tiled_genre_emb)
+
+        if self.config["use_features"]:
+            antecedent_distance_buckets = self.bucket_distance(top_antecedent_offsets) # [k, c]
+            antecedent_distance_emb = tf.gather(tf.get_variable("antecedent_distance_emb", \
+                [10, self.config["feature_size"]]), antecedent_distance_buckets) # [k, c]? [k, c, emb]?
+            feature_emb_list.append(antecedent_distance_emb)
+
+        feature_emb = tf.concat(feature_emb_list, 2) # [k, c, emb]
+        feature_emb = tf.nn.dropout(feature_emb, self.dropout) # [k, c, emb]
+
+        target_emb = tf.expand_dims(top_span_emb, 1) # [k, 1, emb]
+        similarity_emb = top_antecedent_emb * target_emb # [k, c, emb]
+        target_emb = tf.tile(target_emb, [1, c, 1]) # [k, c, emb]
+
+        pair_emb = tf.concat([target_emb, top_antecedent_emb, similarity_emb, feature_emb], 2) # [k, c, emb]
+
+        with tf.variable_scope("slow_antecedent_scores"):
+            slow_antecedent_scores = util.ffnn(pair_emb, self.config["ffnn_depth"], self.config["ffnn_size"], 1, self.dropout) # [k, c, 1]
+        slow_antecedent_scores = tf.squeeze(slow_antecedent_scores, 2) # [k, c]
+        return slow_antecedent_scores # [k, c]
+
     def cnn(self, inputs, filter_sizes, num_filters):
         """ concatenate 3 conv1d layer output
         in_channel, out_channel
@@ -393,3 +605,36 @@ class EntityModel:
             outputs.append(pooled)
         
         return tf.concat(outputs, 1) # [num_words, num_filters * len(filter_sizes)]
+    
+    def batch_gather(self, emb, indices):
+        batch_size = shape(emb, 0)
+        seqlen = shape(emb, 1)
+        if len(emb.get_shape()) > 2:
+            emb_size = shape(emb, 2)
+        else:
+            emb_size = 1
+        
+        flattened_emb = tf.reshape(emb, [batch_size * seqlen, emb_size])  # [batch_size * seqlen, emb]
+        offset = tf.expand_dims(tf.range(batch_size) * seqlen, 1)  # [batch_size, 1]
+        gathered = tf.gather(flattened_emb, indices + offset) # [batch_size, num_indices, emb]
+        if len(emb.get_shape()) == 2:
+            gathered = tf.squeeze(gathered, 2) # [batch_size, num_indices]
+        return gathered
+    
+    def bucket_distance(self, distances):
+        """
+        Places the given values (designed for distances) into 10 semi-logscale buckets:
+        [0, 1, 2, 3, 4, 5-7, 8-15, 16-31, 32-63, 64+].
+        Args:
+            distances: [k, c]
+        """
+        logspace_idx = tf.to_int32(tf.floor(tf.log(tf.to_float(distances))/math.log(2))) + 3
+        use_identity = tf.to_int32(distances <= 4)
+        combined_idx = use_identity * distances + (1 - use_identity) * logspace_idx
+        return tf.clip_by_value(combined_idx, 0, 9)
+    
+    def softmax_loss(self, antecedent_scores, antecedent_labels):
+        gold_scores = antecedent_scores + tf.log(tf.to_float(antecedent_labels)) # [k, max_ant + 1]
+        marginalized_gold_scores = tf.reduce_logsumexp(gold_scores, [1]) # [k]
+        log_norm = tf.reduce_logsumexp(antecedent_scores, [1]) # [k]
+        return log_norm - marginalized_gold_scores # [k]
