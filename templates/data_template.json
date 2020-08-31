@@ -1,0 +1,20 @@
+{
+    "doc_id": "string",
+    "sentences": [
+        
+    ],
+    "speakers": [
+
+    ],
+    "entities": [
+        []
+    ],
+    "relations": [
+        ["start1", "end1", "start2", "end2", "type"]
+    ],
+    "clusters": [
+        [
+            ["start", "end"]
+        ]
+    ]
+}
