@@ -51,12 +51,38 @@ def list_relation(name):
 
     print('Done')
 
+def read_event(name):
+    with open('../../data-center/KG/{}'.format(name), 'r') as f:
+        body = json.load(f)
+        text = body['text']
+        catnns = body['catnns']
+        print(body['event'])
+
+        #for catnn in catnns:
+        #    start, end = int(catnn['span']['begin']), int(catnn['span']['end'])
+        #    print('test', text[start: end])
+    
+def read_events():
+    for root, dirs, files in os.walk('../../data-center/KG/protein_event'):
+        for name in files:
+            path = os.path.join(root, name)
+            print('checking {}'.format(name))
+            with open(path, 'r') as f:
+                body = json.load(f)
+                catnns = body['catnns']
+                for catnn in catnns:
+                    print(catnn['category'])
+        
+
 if __name__ == '__main__':
     # name = 'entity/pmcid/pubtator_67173_PMC2180621.json'
-    name = 'chemicals_diseases_relation'
+    name = 'protein_event/pmcid-3405069-40-Results_and_Discussion.json'
 
     #check_relation()
-    list_relation(name)
+    #list_relation(name)
+    
+    #read_event(name)
+    read_events()
     
 
 
