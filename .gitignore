@@ -3,6 +3,7 @@
 *.jsonlines
 logs
 data
+tests
 conll-2012
 char_vocab*.txt
 glove*.txt

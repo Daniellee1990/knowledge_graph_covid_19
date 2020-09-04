@@ -18,6 +18,8 @@ import util_tf2
 import conll
 import metrics
 
+tf.compat.v1.disable_eager_execution()
+
 class EntityModel:
     def __init__(self, config):
         self.config = config
@@ -37,6 +39,7 @@ class EntityModel:
         self.lm_size = self.config["lm_size"]
         self.eval_data = None # Load eval data lazily.
 
+    def _get_input_structure(self):
         input_props = []
         input_props.append((tf.string, [None, None])) # Tokens.
         input_props.append((tf.float32, [None, None, self.context_embeddings.size])) # Context embeddings.
@@ -51,12 +54,23 @@ class EntityModel:
         input_props.append((tf.int32, [None])) # Gold ends.
         input_props.append((tf.int32, [None])) # Cluster ids.
 
+        return input_props
+
+    def start(self, session):
+        input_props = self._get_input_structure()
         self.queue_input_tensors = [tf.compat.v1.placeholder(dtype, shape) for dtype, shape in input_props]
         dtypes, shapes = zip(*input_props)
         queue = tf.queue.PaddingFIFOQueue(capacity=10, dtypes=dtypes, shapes=shapes)
+
+        train_examples = self.read_data()
+        enqueue_thread = threading.Thread(target=self.enqueue_loop, args=(train_examples, session))
+        # enqueue_thread.daemon = True
+        enqueue_thread.start()
+
         self.enqueue_op = queue.enqueue(self.queue_input_tensors)
         self.input_tensors = queue.dequeue()
 
+        # training process
         self.predictions, self.loss = self.get_predictions_and_loss(*self.input_tensors)
         self.global_step = tf.Variable(0, name="global_step", trainable=False)
         self.reset_global_step = tf.compat.v1.assign(self.global_step, 0)
@@ -72,11 +86,27 @@ class EntityModel:
         optimizer = optimizers[self.config["optimizer"]](learning_rate)
         self.train_op = optimizer.apply_gradients(zip(gradients, trainable_params), global_step=self.global_step)
 
-    def start_enqueue_thread(self, session):
-        # read literatures one by one
+    def read_data(self):
         with open(self.config["train_path"]) as f:
             train_examples = [json.loads(jsonline) for jsonline in f.readlines()]
+        return train_examples
     
+    def enqueue_loop(self, train_examples, session):
+        while True:
+            random.shuffle(train_examples)
+            for example in train_examples:
+                tensorized_example = self.tensorize_example(example, is_training=True)
+                feed_dict = dict(zip(self.queue_input_tensors, tensorized_example))
+                session.run(self.enqueue_op, feed_dict=feed_dict)
+                # session.run(self.input_tensors)
+
+    '''
+    def start_enqueue_thread(self, session):
+        # read literatures one by one
+        print('reading literatures ...')
+        with open(self.config["train_path"]) as f:
+            train_examples = [json.loads(jsonline) for jsonline in f.readlines()]
+
         def _enqueue_loop():
             while True:
                 random.shuffle(train_examples)
@@ -86,8 +116,9 @@ class EntityModel:
                     session.run(self.enqueue_op, feed_dict=feed_dict)
     
         enqueue_thread = threading.Thread(target=_enqueue_loop)
-        enqueue_thread.daemon = True
+        # enqueue_thread.daemon = True
         enqueue_thread.start()
+    '''
 
     def load_lm_embeddings(self, doc_key):
         """ get ELMo embeddings
@@ -163,8 +194,7 @@ class EntityModel:
         speaker_ids = np.array([speaker_dict[s] for s in speakers])
 
         doc_key = example["doc_key"]
-        genre = self.genres[doc_key[:2]]
-
+        genre = self.genres.get(doc_key[:2], len(self.genres) - 1)
         gold_starts, gold_ends = self.tensorize_mentions(gold_mentions)
 
         # ELMo embedding

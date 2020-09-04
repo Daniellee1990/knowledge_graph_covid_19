@@ -28,7 +28,7 @@ def initialize_from_env():
     config = pyhocon.ConfigFactory.parse_file("experiments.conf")[name]
     config["log_dir"] = mkdirs(os.path.join(config["log_root"], name))
 
-    print(pyhocon.HOCONConverter.convert(config, "hocon"))
+    # print(pyhocon.HOCONConverter.convert(config, "hocon"))
     return config
 
 def copy_checkpoint(source, target):
