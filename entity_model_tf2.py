@@ -58,19 +58,22 @@ class EntityModel:
 
     def start(self, session):
         input_props = self._get_input_structure()
+        
         self.queue_input_tensors = [tf.compat.v1.placeholder(dtype, shape) for dtype, shape in input_props]
         dtypes, shapes = zip(*input_props)
         queue = tf.queue.PaddingFIFOQueue(capacity=10, dtypes=dtypes, shapes=shapes)
+
+        self.enqueue_op = queue.enqueue(self.queue_input_tensors)
+        self.input_tensors = queue.dequeue()
 
         train_examples = self.read_data()
         enqueue_thread = threading.Thread(target=self.enqueue_loop, args=(train_examples, session))
         # enqueue_thread.daemon = True
         enqueue_thread.start()
-
-        self.enqueue_op = queue.enqueue(self.queue_input_tensors)
-        self.input_tensors = queue.dequeue()
-
+    
+    def train(self):
         # training process
+        # '''
         self.predictions, self.loss = self.get_predictions_and_loss(*self.input_tensors)
         self.global_step = tf.Variable(0, name="global_step", trainable=False)
         self.reset_global_step = tf.compat.v1.assign(self.global_step, 0)
@@ -85,6 +88,7 @@ class EntityModel:
         }
         optimizer = optimizers[self.config["optimizer"]](learning_rate)
         self.train_op = optimizer.apply_gradients(zip(gradients, trainable_params), global_step=self.global_step)
+        # '''
 
     def read_data(self):
         with open(self.config["train_path"]) as f:
@@ -95,12 +99,12 @@ class EntityModel:
         while True:
             random.shuffle(train_examples)
             for example in train_examples:
+                print('enqueue')
                 tensorized_example = self.tensorize_example(example, is_training=True)
                 feed_dict = dict(zip(self.queue_input_tensors, tensorized_example))
                 session.run(self.enqueue_op, feed_dict=feed_dict)
-                # session.run(self.input_tensors)
+            print('one enqueue loop done')
 
-    '''
     def start_enqueue_thread(self, session):
         # read literatures one by one
         print('reading literatures ...')
@@ -113,12 +117,12 @@ class EntityModel:
                 for example in train_examples:
                     tensorized_example = self.tensorize_example(example, is_training=True)
                     feed_dict = dict(zip(self.queue_input_tensors, tensorized_example))
+                    print('enqueue')
                     session.run(self.enqueue_op, feed_dict=feed_dict)
     
         enqueue_thread = threading.Thread(target=_enqueue_loop)
         # enqueue_thread.daemon = True
         enqueue_thread.start()
-    '''
 
     def load_lm_embeddings(self, doc_key):
         """ get ELMo embeddings
@@ -242,9 +246,11 @@ class EntityModel:
 
         num_sentences = tf.shape(input=context_word_emb)[0]
         max_sentence_length = tf.shape(input=context_word_emb)[1]
+        print('num sentence', num_sentences.eval())
+        print('max sentence length', max_sentence_length.eval())
 
         # embeddings
-        # glove embedding + char embedding + elmo embedding?
+        # glove embedding + char embedding + elmo embedding
         context_emb_list = [context_word_emb]
         head_emb_list = [head_word_emb]
 
@@ -252,6 +258,8 @@ class EntityModel:
         if self.config["char_embedding_size"] > 0:
             char_emb = tf.gather(tf.compat.v1.get_variable("char_embeddings", [len(self.char_dict), self.config["char_embedding_size"]]), \
                 char_index) # [num_sentences, max_sentence_length, max_word_length, char_embedding_size]
+            #char_emb_shape = tf.shape(input=char_emb)[2]
+            #print('test shape', char_emb_shape.eval())
             flattened_char_emb = tf.reshape(char_emb, [num_sentences * max_sentence_length, util_tf2.shape(char_emb, 2), \
                 util_tf2.shape(char_emb, 3)]) # [num_sentences * max_sentence_length, max_word_length, char_embedding_size]
             flattened_aggregated_char_emb = self.cnn(flattened_char_emb, self.config["filter_widths"], self.config["filter_size"]) 
@@ -621,9 +629,9 @@ class EntityModel:
         """ concatenate 3 conv1d layer output
         in_channel, out_channel
         """
-        num_words = shape(inputs, 0)
-        num_chars = shape(inputs, 1)
-        input_size = shape(inputs, 2)
+        num_words = util_tf2.shape(inputs, 0)
+        num_chars = util_tf2.shape(inputs, 1)
+        input_size = util_tf2.shape(inputs, 2)
         outputs = []
         for i, filter_size in enumerate(filter_sizes):
             with tf.compat.v1.variable_scope("conv_{}".format(i)):

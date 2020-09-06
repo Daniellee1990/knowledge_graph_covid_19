@@ -22,7 +22,10 @@ def initialize_from_env():
     else:
         set_gpus()
 
-    name = sys.argv[1]
+    if len(sys.argv) > 1:
+        name = sys.argv[1]
+    else:
+        name = 'best'
     print("Running experiment: {}".format(name))
 
     config = pyhocon.ConfigFactory.parse_file("experiments.conf")[name]
@@ -79,7 +82,8 @@ def highway(inputs, num_layers, dropout):
     return inputs
 
 def shape(x, dim):
-    return x.get_shape()[dim].value or tf.shape(input=x)[dim]
+    # return x.get_shape()[dim].value or tf.shape(input=x)[dim]
+    return tf.shape(input=x)[dim]
 
 def ffnn(inputs, num_hidden_layers, hidden_size, output_size, dropout, output_weights_initializer=None):
     if len(inputs.get_shape()) > 3:

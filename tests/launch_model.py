@@ -13,6 +13,8 @@ import tensorflow as tf
 import entity_model_tf2 as em
 import util_tf2
 
+tf.compat.v1.disable_eager_execution()
+
 if __name__ == "__main__":
     config = util_tf2.initialize_from_env()
     
@@ -24,11 +26,12 @@ if __name__ == "__main__":
     #saver = tf.compat.v1.train.Saver()
 
     log_dir = config["log_dir"]
-    #writer = tf.compat.v1.summary.FileWriter(log_dir, flush_secs=20)
+    writer = tf.compat.v1.summary.FileWriter(log_dir, flush_secs=20)
 
     max_f1 = 0
 
-    with tf.compat.v1.Session() as session:
+    # with tf.compat.v1.Session() as session:
+    with tf.compat.v1.Session().as_default() as session:
         session.run(tf.compat.v1.global_variables_initializer())
         # model.start_enqueue_thread(session)
         model.start(session)
@@ -41,9 +44,12 @@ if __name__ == "__main__":
 
         initial_time = time.time()
         while True:
-            print(123)
-            time.sleep(5)
-            '''
+            #print(123)
+            #time.sleep(5)
+            
+            #input_tensors = session.run(model.input_tensors)
+            model.train()
+            #'''
             tf_loss, tf_global_step, _ = session.run([model.loss, model.global_step, model.train_op])
             accumulated_loss += tf_loss
 
@@ -53,7 +59,7 @@ if __name__ == "__main__":
 
                 average_loss = accumulated_loss / report_frequency
                 print("[{}] loss={:.2f}, steps/s={:.2f}".format(tf_global_step, average_loss, steps_per_second))
-                #writer.add_summary(util_tf2.make_summary({"loss": average_loss}), tf_global_step)
+                writer.add_summary(util_tf2.make_summary({"loss": average_loss}), tf_global_step)
                 accumulated_loss = 0.0
 
             if tf_global_step % eval_frequency == 0:
@@ -67,5 +73,4 @@ if __name__ == "__main__":
                 #writer.add_summary(eval_summary, tf_global_step)
                 #writer.add_summary(util_tf2.make_summary({"max_eval_f1": max_f1}), tf_global_step)
                 print("[{}] evaL_f1={:.2f}, max_f1={:.2f}".format(tf_global_step, eval_f1, max_f1))
-            '''
-
+            #'''
