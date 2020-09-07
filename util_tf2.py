@@ -82,8 +82,17 @@ def highway(inputs, num_layers, dropout):
     return inputs
 
 def shape(x, dim):
-    # return x.get_shape()[dim].value or tf.shape(input=x)[dim]
-    return tf.shape(input=x)[dim]
+    """
+    in tf2, dim value = input.get_shape()[dim]
+    instead of input.get_shape()[dim].value
+    """
+    dim_value = x.get_shape()[dim]
+    if dim_value:
+        return dim_value
+    else:
+        return tf.shape(input=x)[dim]
+    #return x.get_shape()[dim].value or tf.shape(input=x)[dim]
+    #return tf.shape(input=x)[dim]
 
 def ffnn(inputs, num_hidden_layers, hidden_size, output_size, dropout, output_weights_initializer=None):
     if len(inputs.get_shape()) > 3:
@@ -221,11 +230,13 @@ class CustomLSTMCell(tf.compat.v1.nn.rnn_cell.RNNCell):
         self._initializer = self._block_orthonormal_initializer([self.output_size] * 3)
         initial_cell_state = tf.compat.v1.get_variable("lstm_initial_cell_state", [1, self.output_size])
         initial_hidden_state = tf.compat.v1.get_variable("lstm_initial_hidden_state", [1, self.output_size])
-        self._initial_state = tf.nn.rnn_cell.LSTMStateTuple(initial_cell_state, initial_hidden_state)
+        #self._initial_state = tf.nn.rnn_cell.LSTMStateTuple(initial_cell_state, initial_hidden_state)
+        self._initial_state = tf.compat.v1.nn.rnn_cell.LSTMStateTuple(initial_cell_state, initial_hidden_state)
 
     @property
     def state_size(self):
-        return tf.nn.rnn_cell.LSTMStateTuple(self.output_size, self.output_size)
+        return tf.compat.v1.nn.rnn_cell.LSTMStateTuple(self.output_size, self.output_size)
+        #return tf.nn.rnn_cell.LSTMStateTuple(self.output_size, self.output_size)
 
     @property
     def output_size(self):
@@ -245,7 +256,8 @@ class CustomLSTMCell(tf.compat.v1.nn.rnn_cell.RNNCell):
             i = tf.sigmoid(i)
             new_c = (1 - i) * c  + i * tf.tanh(j)
             new_h = tf.tanh(new_c) * tf.sigmoid(o)
-            new_state = tf.nn.rnn_cell.LSTMStateTuple(new_c, new_h)
+            new_state = tf.compat.v1.nn.rnn_cell.LSTMStateTuple(new_c, new_h)
+            #new_state = tf.nn.rnn_cell.LSTMStateTuple(new_c, new_h)
             return new_h, new_state
 
     def _orthonormal_initializer(self, scale=1.0):

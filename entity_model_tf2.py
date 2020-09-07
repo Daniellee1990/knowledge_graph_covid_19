@@ -14,10 +14,11 @@ import tensorflow_hub as hub
 import h5py
 
 import util_tf2
-#import coref_ops
+import coref_ops
 import conll
 import metrics
 
+from tensorflow.python.keras.backend import set_session
 tf.compat.v1.disable_eager_execution()
 
 class EntityModel:
@@ -70,12 +71,15 @@ class EntityModel:
         enqueue_thread = threading.Thread(target=self.enqueue_loop, args=(train_examples, session))
         # enqueue_thread.daemon = True
         enqueue_thread.start()
+
+        session.run(tf.compat.v1.global_variables_initializer())
     
     def train(self):
         # training process
-        # '''
+        #
         self.predictions, self.loss = self.get_predictions_and_loss(*self.input_tensors)
         self.global_step = tf.Variable(0, name="global_step", trainable=False)
+        #'''
         self.reset_global_step = tf.compat.v1.assign(self.global_step, 0)
         learning_rate = tf.compat.v1.train.exponential_decay(self.config["learning_rate"], self.global_step,
                                                 self.config["decay_frequency"], self.config["decay_rate"], staircase=True)
@@ -88,7 +92,7 @@ class EntityModel:
         }
         optimizer = optimizers[self.config["optimizer"]](learning_rate)
         self.train_op = optimizer.apply_gradients(zip(gradients, trainable_params), global_step=self.global_step)
-        # '''
+        #'''
 
     def read_data(self):
         with open(self.config["train_path"]) as f:
@@ -97,7 +101,7 @@ class EntityModel:
     
     def enqueue_loop(self, train_examples, session):
         while True:
-            random.shuffle(train_examples)
+            # random.shuffle(train_examples)
             for example in train_examples:
                 print('enqueue')
                 tensorized_example = self.tensorize_example(example, is_training=True)
@@ -246,8 +250,6 @@ class EntityModel:
 
         num_sentences = tf.shape(input=context_word_emb)[0]
         max_sentence_length = tf.shape(input=context_word_emb)[1]
-        print('num sentence', num_sentences.eval())
-        print('max sentence length', max_sentence_length.eval())
 
         # embeddings
         # glove embedding + char embedding + elmo embedding
@@ -258,8 +260,6 @@ class EntityModel:
         if self.config["char_embedding_size"] > 0:
             char_emb = tf.gather(tf.compat.v1.get_variable("char_embeddings", [len(self.char_dict), self.config["char_embedding_size"]]), \
                 char_index) # [num_sentences, max_sentence_length, max_word_length, char_embedding_size]
-            #char_emb_shape = tf.shape(input=char_emb)[2]
-            #print('test shape', char_emb_shape.eval())
             flattened_char_emb = tf.reshape(char_emb, [num_sentences * max_sentence_length, util_tf2.shape(char_emb, 2), \
                 util_tf2.shape(char_emb, 3)]) # [num_sentences * max_sentence_length, max_word_length, char_embedding_size]
             flattened_aggregated_char_emb = self.cnn(flattened_char_emb, self.config["filter_widths"], self.config["filter_size"]) 
@@ -359,6 +359,7 @@ class EntityModel:
 
         # check antecedents
         c = tf.minimum(self.config["max_top_antecedents"], k)
+        # print('test config', self.config['coarse_to_fine'])
         if self.config["coarse_to_fine"]:
             top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
                 self.coarse_to_fine_pruning(top_span_emb, top_span_mention_scores, c)
@@ -383,10 +384,9 @@ class EntityModel:
                     top_span_emb = f * attended_span_emb + (1 - f) * top_span_emb # [k, emb]
 
         top_antecedent_scores = tf.concat([dummy_scores, top_antecedent_scores], 1) # [k, c + 1]
-
         # get candidates label
         top_antecedent_labels = self.get_antecedent_labels(top_span_cluster_ids, top_antecedents, top_antecedents_mask)
-        
+
         loss = self.softmax_loss(top_antecedent_scores, top_antecedent_labels) # [k]
         loss = tf.reduce_sum(input_tensor=loss) # []
 
@@ -430,9 +430,13 @@ class EntityModel:
                     cell_fw = util_tf2.CustomLSTMCell(self.config["contextualization_size"], num_sentences, self.lstm_dropout)
                 with tf.compat.v1.variable_scope("bw_cell"):
                     cell_bw = util_tf2.CustomLSTMCell(self.config["contextualization_size"], num_sentences, self.lstm_dropout)
-                state_fw = tf.nn.rnn_cell.LSTMStateTuple(tf.tile(cell_fw.initial_state.c, [num_sentences, 1]), \
+                #state_fw = tf.nn.rnn_cell.LSTMStateTuple(tf.tile(cell_fw.initial_state.c, [num_sentences, 1]), \
+                #    tf.tile(cell_fw.initial_state.h, [num_sentences, 1]))
+                #state_bw = tf.nn.rnn_cell.LSTMStateTuple(tf.tile(cell_bw.initial_state.c, [num_sentences, 1]), \
+                #    tf.tile(cell_bw.initial_state.h, [num_sentences, 1]))
+                state_fw = tf.compat.v1.nn.rnn_cell.LSTMStateTuple(tf.tile(cell_fw.initial_state.c, [num_sentences, 1]), \
                     tf.tile(cell_fw.initial_state.h, [num_sentences, 1]))
-                state_bw = tf.nn.rnn_cell.LSTMStateTuple(tf.tile(cell_bw.initial_state.c, [num_sentences, 1]), \
+                state_bw = tf.compat.v1.nn.rnn_cell.LSTMStateTuple(tf.tile(cell_bw.initial_state.c, [num_sentences, 1]), \
                     tf.tile(cell_bw.initial_state.h, [num_sentences, 1]))
 
                 (fw_outputs, bw_outputs), _ = tf.compat.v1.nn.bidirectional_dynamic_rnn(
@@ -632,6 +636,7 @@ class EntityModel:
         num_words = util_tf2.shape(inputs, 0)
         num_chars = util_tf2.shape(inputs, 1)
         input_size = util_tf2.shape(inputs, 2)
+
         outputs = []
         for i, filter_size in enumerate(filter_sizes):
             with tf.compat.v1.variable_scope("conv_{}".format(i)):
@@ -645,10 +650,10 @@ class EntityModel:
         return tf.concat(outputs, 1) # [num_words, num_filters * len(filter_sizes)]
     
     def batch_gather(self, emb, indices):
-        batch_size = shape(emb, 0)
-        seqlen = shape(emb, 1)
+        batch_size = util_tf2.shape(emb, 0)
+        seqlen = util_tf2.shape(emb, 1)
         if len(emb.get_shape()) > 2:
-            emb_size = shape(emb, 2)
+            emb_size = util_tf2.shape(emb, 2)
         else:
             emb_size = 1
         

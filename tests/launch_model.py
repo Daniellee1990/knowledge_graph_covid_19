@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import tensorflow as tf
+from tensorflow.python.keras.backend import set_session
 import entity_model_tf2 as em
 import util_tf2
 
@@ -31,8 +32,9 @@ if __name__ == "__main__":
     max_f1 = 0
 
     # with tf.compat.v1.Session() as session:
+    global session
     with tf.compat.v1.Session().as_default() as session:
-        session.run(tf.compat.v1.global_variables_initializer())
+        #session.run(tf.compat.v1.global_variables_initializer())
         # model.start_enqueue_thread(session)
         model.start(session)
         accumulated_loss = 0.0
@@ -49,9 +51,11 @@ if __name__ == "__main__":
             
             #input_tensors = session.run(model.input_tensors)
             model.train()
-            #'''
+            #
             tf_loss, tf_global_step, _ = session.run([model.loss, model.global_step, model.train_op])
+            #tf_loss, tf_global_step = session.run([model.loss, model.global_step])
             accumulated_loss += tf_loss
+            print('test', accumulated_loss)
 
             if tf_global_step % report_frequency == 0:
                 total_time = time.time() - initial_time
@@ -61,7 +65,7 @@ if __name__ == "__main__":
                 print("[{}] loss={:.2f}, steps/s={:.2f}".format(tf_global_step, average_loss, steps_per_second))
                 writer.add_summary(util_tf2.make_summary({"loss": average_loss}), tf_global_step)
                 accumulated_loss = 0.0
-
+            #'''
             if tf_global_step % eval_frequency == 0:
                 saver.save(session, os.path.join(log_dir, "model"), global_step=tf_global_step)
                 eval_summary, eval_f1 = model.evaluate(session)
