@@ -32,40 +32,39 @@ if __name__ == "__main__":
     max_f1 = 0
 
     # with tf.compat.v1.Session() as session:
-    global session
     with tf.compat.v1.Session().as_default() as session:
-        #session.run(tf.compat.v1.global_variables_initializer())
-        # model.start_enqueue_thread(session)
         model.start(session)
+        model.train()
+        
         accumulated_loss = 0.0
 
         #ckpt = tf.train.get_checkpoint_state(log_dir)
         #if ckpt and ckpt.model_checkpoint_path:
         #    print("Restoring from: {}".format(ckpt.model_checkpoint_path))
         #    saver.restore(session, ckpt.model_checkpoint_path)
+        
+        session.run(tf.compat.v1.global_variables_initializer())
 
         initial_time = time.time()
+        LIMIT = 1400
         while True:
             #print(123)
             #time.sleep(5)
-            
-            #input_tensors = session.run(model.input_tensors)
-            model.train()
-            #
             tf_loss, tf_global_step, _ = session.run([model.loss, model.global_step, model.train_op])
-            #tf_loss, tf_global_step = session.run([model.loss, model.global_step])
             accumulated_loss += tf_loss
-            print('test', accumulated_loss)
 
+            print('training literature: {}'.format(tf_global_step+1))
             if tf_global_step % report_frequency == 0:
                 total_time = time.time() - initial_time
                 steps_per_second = tf_global_step / total_time
 
                 average_loss = accumulated_loss / report_frequency
                 print("[{}] loss={:.2f}, steps/s={:.2f}".format(tf_global_step, average_loss, steps_per_second))
-                writer.add_summary(util_tf2.make_summary({"loss": average_loss}), tf_global_step)
+                writer.add_summary(util_tf2.make_summary({"loss": average_loss, "global_step": tf_global_step}), tf_global_step)
                 accumulated_loss = 0.0
-            #'''
+
+            # evaluate
+            '''
             if tf_global_step % eval_frequency == 0:
                 saver.save(session, os.path.join(log_dir, "model"), global_step=tf_global_step)
                 eval_summary, eval_f1 = model.evaluate(session)
@@ -77,4 +76,8 @@ if __name__ == "__main__":
                 #writer.add_summary(eval_summary, tf_global_step)
                 #writer.add_summary(util_tf2.make_summary({"max_eval_f1": max_f1}), tf_global_step)
                 print("[{}] evaL_f1={:.2f}, max_f1={:.2f}".format(tf_global_step, eval_f1, max_f1))
-            #'''
+            '''
+
+            if tf_global_step == LIMIT:
+                print('Training Done')
+                break

@@ -71,12 +71,9 @@ class EntityModel:
         enqueue_thread = threading.Thread(target=self.enqueue_loop, args=(train_examples, session))
         # enqueue_thread.daemon = True
         enqueue_thread.start()
-
-        session.run(tf.compat.v1.global_variables_initializer())
     
     def train(self):
         # training process
-        #
         self.predictions, self.loss = self.get_predictions_and_loss(*self.input_tensors)
         self.global_step = tf.Variable(0, name="global_step", trainable=False)
         #'''
@@ -101,32 +98,12 @@ class EntityModel:
     
     def enqueue_loop(self, train_examples, session):
         while True:
-            # random.shuffle(train_examples)
+            random.shuffle(train_examples)
             for example in train_examples:
-                print('enqueue')
+                print('put in queue')
                 tensorized_example = self.tensorize_example(example, is_training=True)
                 feed_dict = dict(zip(self.queue_input_tensors, tensorized_example))
                 session.run(self.enqueue_op, feed_dict=feed_dict)
-            print('one enqueue loop done')
-
-    def start_enqueue_thread(self, session):
-        # read literatures one by one
-        print('reading literatures ...')
-        with open(self.config["train_path"]) as f:
-            train_examples = [json.loads(jsonline) for jsonline in f.readlines()]
-
-        def _enqueue_loop():
-            while True:
-                random.shuffle(train_examples)
-                for example in train_examples:
-                    tensorized_example = self.tensorize_example(example, is_training=True)
-                    feed_dict = dict(zip(self.queue_input_tensors, tensorized_example))
-                    print('enqueue')
-                    session.run(self.enqueue_op, feed_dict=feed_dict)
-    
-        enqueue_thread = threading.Thread(target=_enqueue_loop)
-        # enqueue_thread.daemon = True
-        enqueue_thread.start()
 
     def load_lm_embeddings(self, doc_key):
         """ get ELMo embeddings
