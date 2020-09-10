@@ -72,17 +72,30 @@ def read_events():
                 catnns = body['catnns']
                 for catnn in catnns:
                     print(catnn['category'])
-        
+
+def read_data(name):
+    with open('data/json/{}.json'.format(name), 'r') as f:
+        for line in f.readlines():
+            body = json.loads(line)
+            sentences = body['sentences']
+            ner = body['ner']
+            relations = body['relations']
+            
+            index = 0
+            for sentence, relation, e in zip(sentences, relations, ner):
+                print(index)
+                print(sentence)
+                print(relation)
+                print(e)
+                print('\n')
+                index += len(sentence)
+            break
 
 if __name__ == '__main__':
     # name = 'entity/pmcid/pubtator_67173_PMC2180621.json'
-    name = 'protein_event/pmcid-3405069-40-Results_and_Discussion.json'
+    name = 'dev'
 
-    #check_relation()
-    #list_relation(name)
-    
-    #read_event(name)
-    read_events()
+    read_data(name)
     
 
 

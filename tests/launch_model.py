@@ -46,7 +46,7 @@ if __name__ == "__main__":
         session.run(tf.compat.v1.global_variables_initializer())
 
         initial_time = time.time()
-        LIMIT = 1400
+        LIMIT = 350
         while True:
             #print(123)
             #time.sleep(5)
