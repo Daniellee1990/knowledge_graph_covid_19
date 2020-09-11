@@ -51,8 +51,12 @@ class EntityModel:
         input_props.append((tf.int32, [None])) # Speaker IDs.
         input_props.append((tf.int32, [])) # Genre.
         input_props.append((tf.bool, [])) # Is training.
-        input_props.append((tf.int32, [None])) # entities
-        input_props.append((tf.int32, [None])) # relations
+        input_props.append((tf.int32, [None])) # entity_starts
+        input_props.append((tf.int32, [None])) # entity_ends
+        input_props.append((tf.int32, [None])) # entity_labels
+        input_props.append((tf.int32, [None, 2])) # relation_starts,
+        input_props.append((tf.int32, [None, 2])) # relation_ends,
+        input_props.append((tf.int32, [None])) # relation_labels,
         input_props.append((tf.int32, [None])) # Gold starts.
         input_props.append((tf.int32, [None])) # Gold ends.
         input_props.append((tf.int32, [None])) # Cluster ids.
@@ -144,8 +148,12 @@ class EntityModel:
             speaker_ids: [total_word], every word belong to which speaker
             genre: int, genre index
             is_training: boolean
-            entities: set
-            relations: set
+            entity_starts: [num_entity], start indices of entities
+            entity_ends: [num_entity], end indices of entities
+            entity_labels: [num_entity]
+            relation_starts: [num_relation, 2]
+            relation_ends: [num_relation, 2]
+            relation_labels: [num_relation]
             gold_starts: start indices of mentions
             gold_ends, end indices of mentions
             cluster_ids: set
@@ -185,14 +193,20 @@ class EntityModel:
         doc_key = example["doc_key"]
         genre = self.genres.get(doc_key[:2], len(self.genres) - 1)
         gold_starts, gold_ends = self.tensorize_mentions(gold_mentions)
-        entities = example['ner']
-        relations = example['relations']
+        
+        entitiy_starts = np.array(example['entity_starts'])
+        entity_ends = np.array(example['entity_ends'])
+        entity_labels = np.array(example['entity_labels'])
+        relation_starts = np.array(example['relation_starts'])
+        relation_ends = np.array(example['relation_ends'])
+        relation_labels = np.array(example['relation_labels'])
 
         # ELMo embedding
         lm_emb = self.load_lm_embeddings(doc_key)
 
         example_tensors = (tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-            text_len, speaker_ids, genre, is_training, entities, relations, gold_starts, gold_ends, cluster_ids)
+            text_len, speaker_ids, genre, is_training, entitiy_starts, entity_ends, entity_labels, \
+                relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids)
         
         if is_training and len(sentences) > self.config["max_training_sentences"]:
             return self.truncate_example(*example_tensors)
@@ -200,7 +214,8 @@ class EntityModel:
             return example_tensors
     
     def truncate_example(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-        text_len, speaker_ids, genre, is_training, entities, relations, gold_starts, gold_ends, cluster_ids):
+        text_len, speaker_ids, genre, is_training, entitiy_starts, entity_ends, entity_labels, \
+            relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
         max_training_sentences = self.config["max_training_sentences"]
         num_sentences = context_word_emb.shape[0]
         assert num_sentences > max_training_sentences
@@ -222,11 +237,12 @@ class EntityModel:
         cluster_ids = cluster_ids[gold_spans]
 
         return tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-            text_len, speaker_ids, genre, is_training, entities, relations, 
-            gold_starts, gold_ends, cluster_ids
+            text_len, speaker_ids, genre, is_training, entitiy_starts, entity_ends, entity_labels, \
+                relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids
     
     def get_predictions_and_loss(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-        text_len, speaker_ids, genre, is_training, entities, relations, gold_starts, gold_ends, cluster_ids):
+        text_len, speaker_ids, genre, is_training, entitiy_starts, entity_ends, entity_labels, \
+            relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
         
         self.dropout = self.get_dropout(self.config["dropout_rate"], is_training)
         self.lexical_dropout = self.get_dropout(self.config["lexical_dropout_rate"], is_training)

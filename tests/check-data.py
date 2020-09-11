@@ -85,8 +85,8 @@ def read_data(name):
             for sentence, relation, e in zip(sentences, relations, ner):
                 print(index)
                 print(sentence)
-                print(relation)
-                print(e)
+                print(relation, len(relation))
+                print(e, len(e))
                 print('\n')
                 index += len(sentence)
             break
