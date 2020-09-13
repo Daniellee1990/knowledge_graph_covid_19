@@ -194,7 +194,7 @@ class EntityModel:
         genre = self.genres.get(doc_key[:2], len(self.genres) - 1)
         gold_starts, gold_ends = self.tensorize_mentions(gold_mentions)
         
-        entitiy_starts = np.array(example['entity_starts'])
+        entity_starts = np.array(example['entity_starts'])
         entity_ends = np.array(example['entity_ends'])
         entity_labels = np.array(example['entity_labels'])
         relation_starts = np.array(example['relation_starts'])
@@ -205,7 +205,7 @@ class EntityModel:
         lm_emb = self.load_lm_embeddings(doc_key)
 
         example_tensors = (tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-            text_len, speaker_ids, genre, is_training, entitiy_starts, entity_ends, entity_labels, \
+            text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
                 relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids)
         
         if is_training and len(sentences) > self.config["max_training_sentences"]:
@@ -214,7 +214,7 @@ class EntityModel:
             return example_tensors
     
     def truncate_example(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-        text_len, speaker_ids, genre, is_training, entitiy_starts, entity_ends, entity_labels, \
+        text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
             relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
         max_training_sentences = self.config["max_training_sentences"]
         num_sentences = context_word_emb.shape[0]
@@ -237,11 +237,11 @@ class EntityModel:
         cluster_ids = cluster_ids[gold_spans]
 
         return tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-            text_len, speaker_ids, genre, is_training, entitiy_starts, entity_ends, entity_labels, \
+            text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
                 relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids
     
     def get_predictions_and_loss(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-        text_len, speaker_ids, genre, is_training, entitiy_starts, entity_ends, entity_labels, \
+        text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
             relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
         
         self.dropout = self.get_dropout(self.config["dropout_rate"], is_training)
@@ -329,7 +329,10 @@ class EntityModel:
         candidate_sentence_indices = tf.boolean_mask(tensor=tf.reshape(candidate_start_sentence_indices, [-1]), mask=flattened_candidate_mask) 
         # [num_candidates]
 
-        candidate_cluster_ids = self.get_candidate_labels(candidate_starts, candidate_ends, gold_starts, gold_ends, cluster_ids) 
+        # get labels
+        candidate_cluster_ids = self.get_candidate_labels(candidate_starts, candidate_ends, gold_starts, gold_ends, cluster_ids)
+        # [num_candidates]
+        candidate_entity_labels = self.get_entity_labels(candidate_starts, candidate_ends, entity_starts, entity_ends, entity_labels)
         # [num_candidates]
 
         candidate_span_emb = self.get_span_emb(flattened_head_emb, context_outputs, candidate_starts, candidate_ends) # [num_candidates, emb]
@@ -485,6 +488,14 @@ class EntityModel:
         candidate_labels = tf.squeeze(candidate_labels, 0) 
         # [num_candidates]
         return candidate_labels
+    
+    def get_entity_labels(self, candidate_starts, candidate_ends, entity_starts, entity_ends, entity_labels):
+        same_start = tf.equal(tf.expand_dims(entity_starts, 1), tf.expand_dims(candidate_starts, 0))
+        same_end = tf.equal(tf.expand_dims(entity_ends, 1), tf.expand_dims(candidate_ends, 0))
+        same_span = tf.logical_and(same_start, same_end)
+        candidate_entity_labels = tf.matmul(tf.expand_dims(entity_labels, 0), tf.cast(same_span, dtype=tf.int32))
+        candidate_entity_labels = tf.squeeze(candidate_entity_labels, 0)
+        return candidate_entity_labels
 
     def get_span_emb(self, head_emb, context_outputs, span_starts, span_ends):
         """
