@@ -104,7 +104,7 @@ class EntityModel:
     
     def enqueue_loop(self, train_examples, session):
         while True:
-            random.shuffle(train_examples)
+            # random.shuffle(train_examples)
             for example in train_examples:
                 print('put in queue')
                 tensorized_example = self.tensorize_example(example, is_training=True)
@@ -197,8 +197,16 @@ class EntityModel:
         entity_starts = np.array(example['entity_starts'])
         entity_ends = np.array(example['entity_ends'])
         entity_labels = np.array(example['entity_labels'])
-        relation_starts = np.array(example['relation_starts'])
-        relation_ends = np.array(example['relation_ends'])
+        
+        relation_starts = example['relation_starts']
+        if not len(relation_starts): 
+            relation_starts = np.empty(shape=(0,2))
+        relation_starts = np.array(relation_starts)
+        relation_ends = example['relation_ends']
+        if not len(relation_ends): 
+            relation_ends = np.empty(shape=(0,2))
+        relation_ends = np.array(relation_ends)
+        
         relation_labels = np.array(example['relation_labels'])
 
         # ELMo embedding
@@ -359,9 +367,13 @@ class EntityModel:
         top_span_mention_scores = tf.gather(candidate_mention_scores, top_span_indices) # [k]
         top_span_sentence_indices = tf.gather(candidate_sentence_indices, top_span_indices) # [k]
         top_span_speaker_ids = tf.gather(speaker_ids, top_span_starts) # [k]
+        
+        top_span_entity_labels = tf.gather(candidate_entity_labels, top_span_indices) # [k]
 
         # check antecedents
         c = tf.minimum(self.config["max_top_antecedents"], k)
+        # c: number of antecedents
+
         # print('test config', self.config['coarse_to_fine'])
         if self.config["coarse_to_fine"]:
             top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
@@ -370,6 +382,11 @@ class EntityModel:
             top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
                 self.distance_pruning(top_span_emb, top_span_mention_scores, c)
         
+        # entity scores
+        self.entity_scores = self.get_entity_scores(top_span_emb)
+        self.entity_labels_mask = self.get_entity_label_mask(top_span_entity_labels)
+
+        # co-reference loss function
         dummy_scores = tf.zeros([k, 1]) # [k, 1]
         for i in range(self.config["coref_depth"]):
             with tf.compat.v1.variable_scope("coref_layer", reuse=(i > 0)):
@@ -390,7 +407,11 @@ class EntityModel:
         # get candidates label
         top_antecedent_labels = self.get_antecedent_labels(top_span_cluster_ids, top_antecedents, top_antecedents_mask)
 
-        loss = self.softmax_loss(top_antecedent_scores, top_antecedent_labels) # [k]
+        #loss = self.softmax_loss(top_antecedent_scores, top_antecedent_labels) # [k]
+        #loss = tf.reduce_sum(input_tensor=loss) # []
+
+        # entity loss function
+        loss = self.entity_loss(self.entity_scores, self.entity_labels_mask) # [k]
         loss = tf.reduce_sum(input_tensor=loss) # []
 
         return [candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends, \
@@ -578,6 +599,12 @@ class EntityModel:
         return top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets
 
     def distance_pruning(self, top_span_emb, top_span_mention_scores, c):
+        """
+        Args:
+            top_span_emb: [k, emb],
+            top_span_mention_scores: [k]
+            c: top number
+        """
         k = util_tf2.shape(top_span_emb, 0)
         top_antecedent_offsets = tf.tile(tf.expand_dims(tf.range(c) + 1, 0), [k, 1]) # [k, c]
         raw_top_antecedents = tf.expand_dims(tf.range(k), 1) - top_antecedent_offsets # [k, c]
@@ -587,6 +614,30 @@ class EntityModel:
         top_fast_antecedent_scores = tf.expand_dims(top_span_mention_scores, 1) + tf.gather(top_span_mention_scores, top_antecedents) # [k, c]
         top_fast_antecedent_scores += tf.math.log(tf.cast(top_antecedents_mask, dtype=tf.float32)) # [k, c]
         return top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets
+
+    def get_entity_scores(self, span_emb):
+        """
+        Args:
+            span_emb: [k, emb]
+        Returns:
+            entity_scores: [k, entity_classes]
+        """
+        with tf.compat.v1.variable_scope("entity_scores"):
+            entity_scores = util_tf2.ffnn(span_emb, self.config["entity_ffnn_depth"], self.config["entity_ffnn_size"], \
+                self.config['entity_classes'], self.dropout) # [num_candidates, entity_classes]
+        return tf.nn.softmax(entity_scores)
+    
+    def get_entity_label_mask(self, entity_labels):
+        """
+        Args:
+            entity_labels: [k]
+        Returns:
+            entity_labels_mask: [k, num_classes]
+        """
+        entity_index = tf.expand_dims(tf.range(self.config['entity_classes']), 0) # [1, num_classes]
+        entity_labels = tf.expand_dims(entity_labels, 1) # [k, 1]
+        entity_labels_mask = tf.equal(entity_index, entity_labels)
+        return tf.cast(entity_labels_mask, dtype=tf.float32)
 
     def get_fast_antecedent_scores(self, top_span_emb):
         with tf.compat.v1.variable_scope("src_projection"):
@@ -688,7 +739,25 @@ class EntityModel:
         return tf.clip_by_value(combined_idx, 0, 9)
     
     def softmax_loss(self, antecedent_scores, antecedent_labels):
+        """
+        Args:
+            antecedent_scores: [k, c+1],
+            antecedent_labels: [k, c+1]
+        Returns:
+            loss: [k]
+        """
         gold_scores = antecedent_scores + tf.math.log(tf.cast(antecedent_labels, dtype=tf.float32)) # [k, max_ant + 1]
         marginalized_gold_scores = tf.reduce_logsumexp(input_tensor=gold_scores, axis=[1]) # [k]
         log_norm = tf.reduce_logsumexp(input_tensor=antecedent_scores, axis=[1]) # [k]
         return log_norm - marginalized_gold_scores # [k]
+    
+    def entity_loss(self, entity_scores, entity_labels):
+        """
+        Args:
+            entity_scores: [k, num_classes],
+            entity_labels: [k, num_classes]
+        Returns:
+            loss: [k]
+        """
+        loss_tensor = tf.abs(entity_scores - entity_labels)
+        return tf.reduce_logsumexp(input_tensor=loss_tensor, axis=[1]) # [k]

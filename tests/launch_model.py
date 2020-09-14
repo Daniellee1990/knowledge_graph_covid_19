@@ -46,13 +46,15 @@ if __name__ == "__main__":
         session.run(tf.compat.v1.global_variables_initializer())
 
         initial_time = time.time()
-        LIMIT = 350
+        LIMIT = 3500
         while True:
             #print(123)
             #time.sleep(5)
-            tf_loss, tf_global_step, _ = session.run([model.loss, model.global_step, model.train_op])
+            tf_loss, tf_global_step, entity_scores, entity_labels, _ = \
+                session.run([model.loss, model.global_step, model.entity_scores, model.entity_labels_mask, model.train_op])
             accumulated_loss += tf_loss
 
+            print('test labels\n', entity_labels)
             print('training literature: {}'.format(tf_global_step+1))
             if tf_global_step % report_frequency == 0:
                 total_time = time.time() - initial_time
