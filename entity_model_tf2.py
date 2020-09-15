@@ -405,9 +405,9 @@ class EntityModel:
 
         top_antecedent_scores = tf.concat([dummy_scores, top_antecedent_scores], 1) # [k, c + 1]
         # get candidates label
-        top_antecedent_labels = self.get_antecedent_labels(top_span_cluster_ids, top_antecedents, top_antecedents_mask)
+        self.top_antecedent_labels = self.get_antecedent_labels(top_span_cluster_ids, top_antecedents, top_antecedents_mask)
 
-        #loss = self.softmax_loss(top_antecedent_scores, top_antecedent_labels) # [k]
+        #loss = self.softmax_loss(top_antecedent_scores, self.top_antecedent_labels) # [k]
         #loss = tf.reduce_sum(input_tensor=loss) # []
 
         # entity loss function
@@ -759,5 +759,9 @@ class EntityModel:
         Returns:
             loss: [k]
         """
-        loss_tensor = tf.abs(entity_scores - entity_labels)
-        return tf.reduce_logsumexp(input_tensor=loss_tensor, axis=[1]) # [k]
+        gold_scores = entity_scores + tf.math.log(tf.cast(entity_labels, dtype=tf.float32)) # [k, num_classes]
+        marginalized_gold_scores = tf.reduce_logsumexp(input_tensor=gold_scores, axis=[1]) # [k]
+        log_norm = tf.reduce_logsumexp(input_tensor=entity_scores, axis=[1]) # [k]
+        return log_norm - marginalized_gold_scores # [k]
+        #loss_tensor = tf.abs(entity_scores - entity_labels)
+        #return tf.reduce_logsumexp(input_tensor=loss_tensor, axis=[1]) # [k]
