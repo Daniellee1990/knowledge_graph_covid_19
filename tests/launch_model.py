@@ -55,7 +55,7 @@ if __name__ == "__main__":
             accumulated_loss += tf_loss
 
             #print('test labels\n', tf_coref_labels)
-            print('test score', score_tensor)
+            # print('test score', score_tensor)
             print('training literature: {}'.format(tf_global_step+1))
             if tf_global_step % report_frequency == 0:
                 total_time = time.time() - initial_time
