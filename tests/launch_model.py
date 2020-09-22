@@ -67,19 +67,18 @@ if __name__ == "__main__":
                 accumulated_loss = 0.0
 
             # evaluate
-            '''
-            if tf_global_step % eval_frequency == 0:
-                saver.save(session, os.path.join(log_dir, "model"), global_step=tf_global_step)
-                eval_summary, eval_f1 = model.evaluate(session)
+            if tf_global_step > 0 and tf_global_step % eval_frequency == 0:
+                # saver.save(session, os.path.join(log_dir, "model"), global_step=tf_global_step)
+                # eval_summary, eval_f1 = model.evaluate(session)
+                eval_f1 = model.evaluate_entity(session)
 
                 if eval_f1 > max_f1:
                     max_f1 = eval_f1
-                    util_tf2.copy_checkpoint(os.path.join(log_dir, "model-{}".format(tf_global_step)), os.path.join(log_dir, "model.max.ckpt"))
+                    # util_tf2.copy_checkpoint(os.path.join(log_dir, "model-{}".format(tf_global_step)), os.path.join(log_dir, "model.max.ckpt"))
 
                 #writer.add_summary(eval_summary, tf_global_step)
-                #writer.add_summary(util_tf2.make_summary({"max_eval_f1": max_f1}), tf_global_step)
+                writer.add_summary(util_tf2.make_summary({"max_eval_f1": max_f1}), tf_global_step)
                 print("[{}] evaL_f1={:.2f}, max_f1={:.2f}".format(tf_global_step, eval_f1, max_f1))
-            '''
 
             if tf_global_step == LIMIT:
                 print('Training Done')

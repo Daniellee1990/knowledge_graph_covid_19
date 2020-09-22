@@ -17,6 +17,7 @@ import util_tf2
 import coref_ops
 import conll
 import metrics
+from entity_eval import EntityEvaluator
 
 from tensorflow.python.keras.backend import set_session
 tf.compat.v1.disable_eager_execution()
@@ -409,16 +410,16 @@ class EntityModel:
         #loss = tf.reduce_sum(input_tensor=loss) # []
 
         # entity scores
-        self.entity_scores = self.get_entity_scores(top_span_emb)
-        self.entity_labels_mask = self.get_entity_label_mask(top_span_entity_labels)
+        entity_scores = self.get_entity_scores(top_span_emb)
+        entity_labels_mask = self.get_entity_label_mask(top_span_entity_labels)
 
         # entity loss function
-        loss = self.entity_loss(self.entity_scores, self.entity_labels_mask) # [k]
+        loss = self.entity_loss(entity_scores, entity_labels_mask) # [k]
         loss = tf.reduce_sum(input_tensor=loss) # []
 
         #return [candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends, \
         #    top_antecedents, top_antecedent_scores], loss
-        return [candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends], loss
+        return [entity_scores, entity_labels_mask], loss
 
     def get_antecedent_labels(self, top_span_cluster_ids, top_antecedents, top_antecedents_mask):
         """
@@ -828,6 +829,8 @@ class EntityModel:
             num_words = sum(tensorized_example[2].sum() for tensorized_example, _ in self.eval_data)
             print("Loaded {} eval examples.".format(len(self.eval_data)))
 
+    
+
     def evaluate(self, session, official_stdout=False):
         self.load_eval_data()
 
@@ -859,3 +862,19 @@ class EntityModel:
         print("Average recall (py): {:.2f}%".format(r * 100))
 
         return util_tf2.make_summary(summary_dict), average_f1
+    
+    def evaluate_entity(self, session):
+        self.load_eval_data()
+
+        entity_evaluator = EntityEvaluator()
+
+        for example_num, (tensorized_example, example) in enumerate(self.eval_data):
+            feed_dict = {i:t for i,t in zip(self.input_tensors, tensorized_example)}
+            entity_scores, entity_labels_mask = session.run(self.predictions, feed_dict=feed_dict)
+            entity_evaluator.merge_input(entity_scores, entity_labels_mask)
+
+            if example_num % 10 == 0:
+                print("Evaluated {}/{} examples.".format(example_num + 1, len(self.eval_data)))
+        
+        return entity_evaluator.calc_f1()
+
