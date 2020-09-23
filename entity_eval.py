@@ -27,6 +27,10 @@ class EntityEvaluator:
         print('evaluate length: {}'.format(len(self.labels)))
         f1 = f1_score(y_true=self.labels, y_pred=self.preds, average='weighted')
         return f1
+    
+    def calc_accuracy(self):
+        acc = [1 if label == pred else 0 for label, pred in zip(self.labels, self.preds)]
+        return float(sum(acc)) / float(len(self.labels))
 
 if __name__ == '__main__':
     score_matrix = np.array([
@@ -34,8 +38,8 @@ if __name__ == '__main__':
         [2,1,5,2],
         [3,4,1,5]
     ])
-    score_mask = score_matrix = np.array([
-        [0,0,0,2],
+    score_mask = np.array([
+        [0,0,1,0],
         [2,1,5,2],
         [3,4,1,5]
     ])
@@ -43,4 +47,6 @@ if __name__ == '__main__':
     entity_evaluator = EntityEvaluator()
     entity_evaluator.merge_input(score_matrix, score_mask)
     f1_score = entity_evaluator.calc_f1()
+    acc = entity_evaluator.calc_accuracy()
     print('f1 score: {}'.format(f1_score))
+    print('accuracy: {}'.format(acc))

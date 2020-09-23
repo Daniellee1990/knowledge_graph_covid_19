@@ -105,7 +105,7 @@ class EntityModel:
     
     def enqueue_loop(self, train_examples, session):
         while True:
-            # random.shuffle(train_examples)
+            random.shuffle(train_examples)
             for example in train_examples:
                 print('put in queue')
                 tensorized_example = self.tensorize_example(example, is_training=True)
@@ -874,7 +874,7 @@ class EntityModel:
             entity_evaluator.merge_input(entity_scores, entity_labels_mask)
 
             if example_num % 10 == 0:
-                print("Evaluated {}/{} examples.".format(example_num + 1, len(self.eval_data)))
+                print("Evaluated {}/{} examples.".format(example_num, len(self.eval_data)))
         
-        return entity_evaluator.calc_f1()
+        return entity_evaluator.calc_f1(), entity_evaluator.calc_accuracy()
 
