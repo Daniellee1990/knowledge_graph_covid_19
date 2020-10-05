@@ -383,6 +383,9 @@ class EntityModel:
             top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
                 self.distance_pruning(top_span_emb, top_span_mention_scores, c)
 
+        # relation loss function
+        relation_scores = self.get_relation_scores(top_span_emb)
+
         # co-reference loss function
         '''
         dummy_scores = tf.zeros([k, 1]) # [k, 1]
@@ -521,6 +524,21 @@ class EntityModel:
         candidate_entity_labels = tf.matmul(tf.expand_dims(entity_labels, 0), tf.cast(same_span, dtype=tf.int32))
         candidate_entity_labels = tf.squeeze(candidate_entity_labels, 0)
         return candidate_entity_labels
+    
+    def get_relation_labels(self, candidate_starts, candidate_ends, relation_starts, relation_ends, relation_labels):
+        """
+        Args:
+            candidate_starts: [k],
+            candidate_ends: [k],
+            relation1_starts: [l],
+            relation1_ends: [l],
+            relation2_starts: [l],
+            relation2_ends: [l],
+            relation_labels: [l]
+        Returns:
+            relation_labels: [k, k]
+        """
+        pass
 
     def get_span_emb(self, head_emb, context_outputs, span_starts, span_ends):
         """
@@ -648,6 +666,18 @@ class EntityModel:
         entity_labels = tf.expand_dims(entity_labels, 1) # [k, 1]
         entity_labels_mask = tf.equal(entity_index, entity_labels)
         return tf.cast(entity_labels_mask, dtype=tf.float32)
+
+    def get_relation_scores(self, span_emb):
+        """
+        Args:
+            span_emb: [k, emb]
+        Returns:
+            relation_scores: [k, k, relation_classes]
+        """
+        #k = util_tf2.shape(span_emb, 0)
+        #offset = tf.expand_dim(tf.range(k), 1) + tf.expand_dim(tf.range(k), 0)
+
+        pass
 
     def get_fast_antecedent_scores(self, top_span_emb):
         with tf.compat.v1.variable_scope("src_projection"):
