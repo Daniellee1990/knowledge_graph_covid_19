@@ -38,7 +38,7 @@ def get_labels(names=['dev', 'test', 'train']):
     entity_map = {}
     relation_map = {}
     for name in names:
-        with open('data/json/{}.json'.format(name), 'r') as f:
+        with open('data/json/{}_raw.json'.format(name), 'r') as f:
             for line in f.readlines():
                 body = json.loads(line)
                 ner = body['ner']
@@ -63,12 +63,13 @@ def get_labels(names=['dev', 'test', 'train']):
     return entity_map, relation_map
 
 def flatten_entity_relation(name):
-    with open('data/json/{}.json'.format(name), 'r') as f:
+    with open('data/json/{}_raw.json'.format(name), 'r') as f:
         new_list = []
         for line in f.readlines():
             body = json.loads(line)
             entity_starts, entity_ends, entity_labels = [], [], []
-            relation_starts, relation_ends, relation_labels = [], [], []
+            relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels = \
+                [], [], [], [], []
             
             for sentence_entity in body['ner']:
                 for e in sentence_entity:
@@ -78,16 +79,20 @@ def flatten_entity_relation(name):
 
             for sentence_relation in body['relations']:
                 for r in sentence_relation:
-                    relation_starts.append([r[0], r[1]])
-                    relation_ends.append([r[2], r[3]])
+                    relation1_starts.append(r[0])
+                    relation1_ends.append(r[1])
+                    relation2_starts.append(r[2])
+                    relation2_ends.append(r[3])
                     relation_labels.append(relation_map[r[4]])
             
             body.update({
                 'entity_starts': entity_starts,
                 'entity_ends': entity_ends,
                 'entity_labels': entity_labels,
-                'relation_starts': relation_starts,
-                'relation_ends': relation_ends,
+                'relation1_starts': relation1_starts,
+                'relation1_ends': relation1_ends,
+                'relation2_starts': relation2_starts,
+                'relation2_ends': relation2_ends,
                 'relation_labels': relation_labels
             })
 

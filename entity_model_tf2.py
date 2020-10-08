@@ -55,8 +55,11 @@ class EntityModel:
         input_props.append((tf.int32, [None])) # entity_starts
         input_props.append((tf.int32, [None])) # entity_ends
         input_props.append((tf.int32, [None])) # entity_labels
-        input_props.append((tf.int32, [None, 2])) # relation_starts,
-        input_props.append((tf.int32, [None, 2])) # relation_ends,
+        input_props.append((tf.int32, [None])) # relation1_starts,
+        input_props.append((tf.int32, [None])) # relation1_ends,
+        input_props.append((tf.int32, [None])) # relation2_starts,
+        input_props.append((tf.int32, [None])) # relation2_ends,
+
         input_props.append((tf.int32, [None])) # relation_labels,
         input_props.append((tf.int32, [None])) # Gold starts.
         input_props.append((tf.int32, [None])) # Gold ends.
@@ -152,8 +155,10 @@ class EntityModel:
             entity_starts: [num_entity], start indices of entities
             entity_ends: [num_entity], end indices of entities
             entity_labels: [num_entity]
-            relation_starts: [num_relation, 2]
-            relation_ends: [num_relation, 2]
+            relation1_starts: [num_relation],
+            relation1_ends: [num_relation],
+            relation2_starts: [num_relation],
+            relation2_ends: [num_relation],
             relation_labels: [num_relation]
             gold_starts: start indices of mentions
             gold_ends, end indices of mentions
@@ -199,15 +204,10 @@ class EntityModel:
         entity_ends = np.array(example['entity_ends'])
         entity_labels = np.array(example['entity_labels'])
         
-        relation_starts = example['relation_starts']
-        if not len(relation_starts): 
-            relation_starts = np.empty(shape=(0,2))
-        relation_starts = np.array(relation_starts)
-        relation_ends = example['relation_ends']
-        if not len(relation_ends): 
-            relation_ends = np.empty(shape=(0,2))
-        relation_ends = np.array(relation_ends)
-        
+        relation1_starts = np.array(example['relation1_starts'])
+        relation1_ends = np.array(example['relation1_ends'])
+        relation2_starts = np.array(example['relation2_starts'])
+        relation2_ends = np.array(example['relation2_ends'])
         relation_labels = np.array(example['relation_labels'])
 
         # ELMo embedding
@@ -215,7 +215,7 @@ class EntityModel:
 
         example_tensors = (tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
             text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
-                relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids)
+                relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels, gold_starts, gold_ends, cluster_ids)
         
         if is_training and len(sentences) > self.config["max_training_sentences"]:
             return self.truncate_example(*example_tensors)
@@ -224,7 +224,7 @@ class EntityModel:
     
     def truncate_example(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
         text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
-            relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
+            relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
         max_training_sentences = self.config["max_training_sentences"]
         num_sentences = context_word_emb.shape[0]
         assert num_sentences > max_training_sentences
@@ -247,11 +247,12 @@ class EntityModel:
 
         return tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
             text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
-                relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids
+                relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels, \
+                    gold_starts, gold_ends, cluster_ids
     
     def get_predictions_and_loss(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
         text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
-            relation_starts, relation_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
+            relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
         
         self.dropout = self.get_dropout(self.config["dropout_rate"], is_training)
         self.lexical_dropout = self.get_dropout(self.config["lexical_dropout_rate"], is_training)
@@ -371,6 +372,13 @@ class EntityModel:
         
         top_span_entity_labels = tf.gather(candidate_entity_labels, top_span_indices) # [k]
 
+        # relation labels
+        self.top_span_relation_labels = self.get_relation_labels(top_span_starts, top_span_ends, \
+            relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels) # [k, k]
+
+        # relation loss function
+        # relation_scores = self.get_relation_scores(top_span_emb)
+
         # check antecedents
         c = tf.minimum(self.config["max_top_antecedents"], k)
         # c: number of antecedents
@@ -382,9 +390,6 @@ class EntityModel:
         else:
             top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
                 self.distance_pruning(top_span_emb, top_span_mention_scores, c)
-
-        # relation loss function
-        relation_scores = self.get_relation_scores(top_span_emb)
 
         # co-reference loss function
         '''
@@ -525,20 +530,42 @@ class EntityModel:
         candidate_entity_labels = tf.squeeze(candidate_entity_labels, 0)
         return candidate_entity_labels
     
-    def get_relation_labels(self, candidate_starts, candidate_ends, relation_starts, relation_ends, relation_labels):
+    def get_relation_labels(self, candidate_starts, candidate_ends, relation1_starts, relation1_ends, \
+        relation2_starts, relation2_ends, relation_labels):
         """
         Args:
             candidate_starts: [k],
             candidate_ends: [k],
-            relation1_starts: [l],
-            relation1_ends: [l],
-            relation2_starts: [l],
-            relation2_ends: [l],
-            relation_labels: [l]
+            relation1_starts: [num_labels],
+            relation1_ends: [num_labels],
+            relation2_starts: [num_labels],
+            relation2_ends: [num_labels],
+            relation_labels: [num_labels]
         Returns:
-            relation_labels: [k, k]
+            relation_labels_tensor: [k, k]
         """
-        pass
+        same_starts_1 = tf.equal(tf.expand_dims(relation1_starts, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
+        same_ends_1 = tf.equal(tf.expand_dims(relation1_ends, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
+        same_span_1 = tf.logical_and(same_starts_1, same_ends_1) # [num_labels, k]
+        same_starts_2 = tf.equal(tf.expand_dims(relation2_starts, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
+        same_ends_2 = tf.equal(tf.expand_dims(relation2_ends, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
+        same_span_2 = tf.logical_and(same_starts_2, same_ends_2) # [num_labels, k]
+
+        same_span = tf.logical_or(same_span_1, same_span_2) # [num_labels, k]
+        same_span = tf.cast(same_span, tf.int32) # [num_labels, k]
+
+        relation_index, relation_values = tf.nn.top_k(same_span, 2, sorted=False) # [num_labels, 2]
+        relation_sum = tf.reduce_sum(relation_values, axis=1) # [num_labels, 1]
+        relation_mask = relation_sum >= 2 # [num_labels, 1]
+        relation_mask = tf.squeeze(relation_mask, 1) # [num_labels]
+
+        positive_relation_index = tf.boolean_mask(relatioin_index, relation_mask) # [positive_num_labels, 2]
+        positive_relation_labels = tf.boolean_mask(relation_labels, relation_mask) # [positive_num_labels]
+
+        k = util_tf2.shape(candidate_starts, 0)
+        relation_labels_tensor = tf.SparseTensor(indices=positive_relation_index, \
+            values=positive_relation_labels, dense_shape=[k, k]) # [k, k]
+        return relation_labels_tensor
 
     def get_span_emb(self, head_emb, context_outputs, span_starts, span_ends):
         """
