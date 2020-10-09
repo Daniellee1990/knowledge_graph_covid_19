@@ -108,7 +108,7 @@ class EntityModel:
     
     def enqueue_loop(self, train_examples, session):
         while True:
-            random.shuffle(train_examples)
+            # random.shuffle(train_examples)
             for example in train_examples:
                 print('put in queue')
                 tensorized_example = self.tensorize_example(example, is_training=True)
@@ -545,27 +545,26 @@ class EntityModel:
             relation_labels_tensor: [k, k]
         """
         same_starts_1 = tf.equal(tf.expand_dims(relation1_starts, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
-        same_ends_1 = tf.equal(tf.expand_dims(relation1_ends, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
+        same_ends_1 = tf.equal(tf.expand_dims(relation1_ends, 1), tf.expand_dims(candidate_ends, 0)) # [num_labels, k]
         same_span_1 = tf.logical_and(same_starts_1, same_ends_1) # [num_labels, k]
         same_starts_2 = tf.equal(tf.expand_dims(relation2_starts, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
-        same_ends_2 = tf.equal(tf.expand_dims(relation2_ends, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
+        same_ends_2 = tf.equal(tf.expand_dims(relation2_ends, 1), tf.expand_dims(candidate_ends, 0)) # [num_labels, k]
         same_span_2 = tf.logical_and(same_starts_2, same_ends_2) # [num_labels, k]
 
         same_span = tf.logical_or(same_span_1, same_span_2) # [num_labels, k]
         same_span = tf.cast(same_span, tf.int32) # [num_labels, k]
 
-        relation_index, relation_values = tf.nn.top_k(same_span, 2, sorted=False) # [num_labels, 2]
-        relation_sum = tf.reduce_sum(relation_values, axis=1) # [num_labels, 1]
-        relation_mask = relation_sum >= 2 # [num_labels, 1]
-        relation_mask = tf.squeeze(relation_mask, 1) # [num_labels]
+        relation_values, relation_index = tf.nn.top_k(same_span, 2, sorted=False) # [num_labels, 2], [num_labels, 2]
+        relation_sum = tf.reduce_sum(relation_values, axis=1) # [num_labels]
+        relation_mask = relation_sum >= 2 # [num_labels]
 
-        positive_relation_index = tf.boolean_mask(relatioin_index, relation_mask) # [positive_num_labels, 2]
-        positive_relation_labels = tf.boolean_mask(relation_labels, relation_mask) # [positive_num_labels]
+        positive_relation_index = tf.cast(tf.boolean_mask(relation_index, relation_mask), dtype=tf.int64) # [positive_num_labels, 2]
+        positive_relation_labels = tf.cast(tf.boolean_mask(relation_labels, relation_mask), dtype=tf.int64) # [positive_num_labels]
 
         k = util_tf2.shape(candidate_starts, 0)
         relation_labels_tensor = tf.SparseTensor(indices=positive_relation_index, \
             values=positive_relation_labels, dense_shape=[k, k]) # [k, k]
-        return relation_labels_tensor
+        return tf.sparse.to_dense(relation_labels_tensor)
 
     def get_span_emb(self, head_emb, context_outputs, span_starts, span_ends):
         """

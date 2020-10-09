@@ -50,13 +50,16 @@ if __name__ == "__main__":
         while True:
             #print(123)
             #time.sleep(5)
-            tf_loss, tf_global_step, score_tensor, _ = \
-                session.run([model.loss, model.global_step, model.score_tensor, model.train_op])
+            tf_loss, tf_global_step, score_tensor, relation_labels, _ = \
+                session.run([model.loss, model.global_step, model.score_tensor, model.top_span_relation_labels, model.train_op])
             accumulated_loss += tf_loss
 
             #print('test labels\n', tf_coref_labels)
             # print('test score', score_tensor)
             print('training literature: {}'.format(tf_global_step))
+            #print('test labels')
+            #print(relation_labels)
+
             if tf_global_step > 0 and tf_global_step % report_frequency == 0:
                 total_time = time.time() - initial_time
                 steps_per_second = tf_global_step / total_time
