@@ -3,7 +3,8 @@
 *.jsonlines
 logs
 data
-tests
+tests/get-loss.py
+tests/tf_test.py
 conll-2012
 char_vocab*.txt
 glove*.txt

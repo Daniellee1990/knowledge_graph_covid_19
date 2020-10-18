@@ -373,11 +373,12 @@ class EntityModel:
         top_span_entity_labels = tf.gather(candidate_entity_labels, top_span_indices) # [k]
 
         # relation labels
-        self.top_span_relation_labels = self.get_relation_labels(top_span_starts, top_span_ends, \
+        top_span_relation_labels = self.get_relation_labels(top_span_starts, top_span_ends, \
             relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels) # [k, k]
 
         # relation loss function
-        # relation_scores = self.get_relation_scores(top_span_emb)
+        relation_emb = self.get_relation_emb(top_span_emb) # [k, k, emb]
+        relation_scores = self.get_relation_scores(relation_emb) # [k, k, relation_classes]
 
         # check antecedents
         c = tf.minimum(self.config["max_top_antecedents"], k)
@@ -418,16 +419,21 @@ class EntityModel:
         #loss = tf.reduce_sum(input_tensor=loss) # []
 
         # entity scores
-        entity_scores = self.get_entity_scores(top_span_emb)
-        entity_labels_mask = self.get_entity_label_mask(top_span_entity_labels)
+        #entity_scores = self.get_entity_scores(top_span_emb)
+        #entity_labels_mask = self.get_entity_label_mask(top_span_entity_labels)
 
         # entity loss function
-        loss = self.entity_loss(entity_scores, entity_labels_mask) # [k]
-        loss = tf.reduce_sum(input_tensor=loss) # []
+        #loss = self.entity_loss(entity_scores, entity_labels_mask) # [k]
+        #loss = tf.reduce_sum(input_tensor=loss) # []
+
+        # relation loss function
+        relation_labels_mask = self.get_relation_labels_mask(top_span_relation_labels) # [k, k, relation_classes]
+        relation_loss = self.get_relation_loss(relation_scores, relation_labels_mask) # []
 
         #return [candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends, \
         #    top_antecedents, top_antecedent_scores], loss
-        return [entity_scores, entity_labels_mask], loss
+        #return [entity_scores, entity_labels_mask], relation_loss
+        return [relation_scores, relation_labels_mask], relation_loss
 
     def get_antecedent_labels(self, top_span_cluster_ids, top_antecedents, top_antecedents_mask):
         """
@@ -564,6 +570,8 @@ class EntityModel:
         k = util_tf2.shape(candidate_starts, 0)
         relation_labels_tensor = tf.SparseTensor(indices=positive_relation_index, \
             values=positive_relation_labels, dense_shape=[k, k]) # [k, k]
+        # reorder
+        relation_labels_tensor = tf.sparse.reorder(relation_labels_tensor)
         return tf.sparse.to_dense(relation_labels_tensor)
 
     def get_span_emb(self, head_emb, context_outputs, span_starts, span_ends):
@@ -693,17 +701,55 @@ class EntityModel:
         entity_labels_mask = tf.equal(entity_index, entity_labels)
         return tf.cast(entity_labels_mask, dtype=tf.float32)
 
-    def get_relation_scores(self, span_emb):
+    def get_relation_emb(self, span_emb):
         """
         Args:
             span_emb: [k, emb]
         Returns:
+            relation_emb: [k, k, emb]
+        """
+        k = util_tf2.shape(span_emb, 0)
+        relation_index1 = tf.tile(tf.expand_dims(tf.range(k), 1), [1, k]) # [k, k]
+        relation_index2 = tf.tile(tf.expand_dims(tf.range(k), 0), [k, 1]) # [k, k]
+
+        relation_emb1 = tf.gather(span_emb, relation_index1) # [k, k, emb]
+        relation_emb2 = tf.gather(span_emb, relation_index2) # [k, k, emb]
+        multi_emb = relation_emb1 * relation_emb2 # [k, k, emb]
+
+        relation_emb = tf.concat([relation_emb1, relation_emb2, multi_emb], 2) # [k, k, emb]
+        return relation_emb
+
+    def get_relation_labels_mask(self, relation_labels):
+        """
+        Args:
+            relation_labels: [k, k]
+        Returns:
+            relation_labels_mask: [k, k, relation_classes]
+        """
+        k = util_tf2.shape(relation_labels, 0)
+        relation_mask = tf.tile(tf.expand_dims(tf.expand_dims(tf.range(self.config['relation_classes']), 0), 0), [k, k, 1])
+        relation_extend_labels = tf.tile(tf.expand_dims(relation_labels, 2), [1, 1, self.config['relation_classes']])
+        relation_extend_labels = tf.cast(relation_extend_labels, dtype=tf.int32)
+        relation_labels_mask = tf.equal(relation_extend_labels, relation_mask)
+        return tf.cast(relation_labels_mask, dtype=tf.float32)
+
+    def get_relation_scores(self, relation_emb):
+        """
+        Args:
+            relation_emb: [k, k, emb]
+        Returns:
             relation_scores: [k, k, relation_classes]
         """
-        #k = util_tf2.shape(span_emb, 0)
-        #offset = tf.expand_dim(tf.range(k), 1) + tf.expand_dim(tf.range(k), 0)
-
-        pass
+        # every class have a FFNN
+        classes_score = []
+        for i in range(self.config['relation_classes']):
+            with tf.compat.v1.variable_scope("relation_scores_{}".format(i)):
+                class_score = util_tf2.ffnn(relation_emb, self.config["entity_ffnn_depth"], self.config["entity_ffnn_size"], \
+                    1, self.dropout) # [k, k, 1]
+                classes_score.append(class_score)
+        
+        entity_scores = tf.concat(classes_score, 2)
+        return tf.nn.softmax(entity_scores, 1)
 
     def get_fast_antecedent_scores(self, top_span_emb):
         with tf.compat.v1.variable_scope("src_projection"):
@@ -825,8 +871,19 @@ class EntityModel:
         Returns:
             loss: [k]
         """
-        self.score_tensor = entity_scores * entity_labels # [k, num_classes]
-        return -tf.math.log(tf.reduce_sum(self.score_tensor, axis=1))
+        score_tensor = entity_scores * entity_labels # [k, num_classes]
+        return -tf.math.log(tf.reduce_sum(score_tensor, axis=1))
+
+    def get_relation_loss(self, relation_scores, relation_labels_mask):
+        """
+        Args:
+            relation_scores: [k, k, relation_classes]
+            relation_labels_mask: [k, k, relation_classes]
+        Returns:
+            loss: [k, k]
+        """
+        score_tensor = relation_scores * relation_labels_mask
+        return tf.reduce_sum(score_tensor)
 
     ### evaluate ###
     def get_predicted_antecedents(self, antecedents, antecedent_scores):

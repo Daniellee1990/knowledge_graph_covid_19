@@ -46,16 +46,15 @@ if __name__ == "__main__":
         session.run(tf.compat.v1.global_variables_initializer())
 
         initial_time = time.time()
-        LIMIT = 105000
+        LIMIT = 7000
         while True:
             #print(123)
             #time.sleep(5)
-            tf_loss, tf_global_step, score_tensor, relation_labels, _ = \
-                session.run([model.loss, model.global_step, model.score_tensor, model.top_span_relation_labels, model.train_op])
+            tf_loss, tf_global_step, _ = \
+                session.run([model.loss, model.global_step, model.train_op])
             accumulated_loss += tf_loss
 
             #print('test labels\n', tf_coref_labels)
-            # print('test score', score_tensor)
             print('training literature: {}'.format(tf_global_step))
             #print('test labels')
             #print(relation_labels)
@@ -70,6 +69,7 @@ if __name__ == "__main__":
                 accumulated_loss = 0.0
 
             # evaluate
+            '''
             if tf_global_step > 0 and tf_global_step % eval_frequency == 0:
                 # eval_summary, eval_f1 = model.evaluate(session)
                 eval_f1, eval_acc = model.evaluate_entity(session)
@@ -84,7 +84,7 @@ if __name__ == "__main__":
                 #writer.add_summary(eval_summary, tf_global_step)
                 writer.add_summary(util_tf2.make_summary({"max_eval_f1": max_f1, "max_acc": max_acc}), tf_global_step)
                 print("[{}] evaL_f1={:.2f}, max_f1={:.2f}, max_acc={:.2f}".format(tf_global_step, eval_f1, max_f1, max_acc))
-
+            '''
             if tf_global_step == LIMIT:
                 print('Training Done')
                 break
