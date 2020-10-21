@@ -6,6 +6,7 @@ from __future__ import print_function
 import os
 import time
 import sys
+import math
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -50,14 +51,21 @@ if __name__ == "__main__":
         while True:
             #print(123)
             #time.sleep(5)
-            tf_loss, tf_global_step, _ = \
-                session.run([model.loss, model.global_step, model.train_op])
+            tf_loss, tf_global_step, relation_labels_mask, relation_scores, _ = \
+                session.run([model.loss, model.global_step, model.relation_labels_mask, model.relation_scores, model.train_op])
             accumulated_loss += tf_loss
 
             #print('test labels\n', tf_coref_labels)
             print('training literature: {}'.format(tf_global_step))
-            #print('test labels')
+            #print('test relations')
+            #print(relation_scores.shape, relation_labels_mask.shape)
             #print(relation_labels)
+
+            print('test loss', tf_loss)
+            for i in range(relation_scores.shape[0]):
+                for j in range(relation_scores.shape[1]):
+                    if math.isnan(sum(relation_scores[i][j])):
+                        print('error!!!', relation_scores[i][j])
 
             if tf_global_step > 0 and tf_global_step % report_frequency == 0:
                 total_time = time.time() - initial_time
@@ -69,22 +77,22 @@ if __name__ == "__main__":
                 accumulated_loss = 0.0
 
             # evaluate
-            '''
             if tf_global_step > 0 and tf_global_step % eval_frequency == 0:
                 # eval_summary, eval_f1 = model.evaluate(session)
-                eval_f1, eval_acc = model.evaluate_entity(session)
+                #eval_f1, eval_acc = model.evaluate_entity(session)
+                eval_f1, eval_acc = model.evaluate_relation(session)
 
                 if eval_f1 > max_f1:
                     max_f1 = eval_f1
-                    saver.save(session, os.path.join(log_dir, "model"), global_step=tf_global_step)
-                    util_tf2.copy_checkpoint(os.path.join(log_dir, "model-{}".format(tf_global_step)), os.path.join(log_dir, "model.max.ckpt"))
+                    #saver.save(session, os.path.join(log_dir, "model"), global_step=tf_global_step)
+                    #util_tf2.copy_checkpoint(os.path.join(log_dir, "model-{}".format(tf_global_step)), os.path.join(log_dir, "model.max.ckpt"))
                 if eval_acc > max_acc:
                     max_acc = eval_acc
 
                 #writer.add_summary(eval_summary, tf_global_step)
                 writer.add_summary(util_tf2.make_summary({"max_eval_f1": max_f1, "max_acc": max_acc}), tf_global_step)
                 print("[{}] evaL_f1={:.2f}, max_f1={:.2f}, max_acc={:.2f}".format(tf_global_step, eval_f1, max_f1, max_acc))
-            '''
+
             if tf_global_step == LIMIT:
                 print('Training Done')
                 break

@@ -18,6 +18,7 @@ import coref_ops
 import conll
 import metrics
 from entity_eval import EntityEvaluator
+from relation_eval import RelationEvaluator
 
 from tensorflow.python.keras.backend import set_session
 tf.compat.v1.disable_eager_execution()
@@ -110,7 +111,7 @@ class EntityModel:
         while True:
             # random.shuffle(train_examples)
             for example in train_examples:
-                print('put in queue')
+                # print('put in queue')
                 tensorized_example = self.tensorize_example(example, is_training=True)
                 feed_dict = dict(zip(self.queue_input_tensors, tensorized_example))
                 session.run(self.enqueue_op, feed_dict=feed_dict)
@@ -372,14 +373,6 @@ class EntityModel:
         
         top_span_entity_labels = tf.gather(candidate_entity_labels, top_span_indices) # [k]
 
-        # relation labels
-        top_span_relation_labels = self.get_relation_labels(top_span_starts, top_span_ends, \
-            relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels) # [k, k]
-
-        # relation loss function
-        relation_emb = self.get_relation_emb(top_span_emb) # [k, k, emb]
-        relation_scores = self.get_relation_scores(relation_emb) # [k, k, relation_classes]
-
         # check antecedents
         c = tf.minimum(self.config["max_top_antecedents"], k)
         # c: number of antecedents
@@ -423,17 +416,24 @@ class EntityModel:
         #entity_labels_mask = self.get_entity_label_mask(top_span_entity_labels)
 
         # entity loss function
-        #loss = self.entity_loss(entity_scores, entity_labels_mask) # [k]
-        #loss = tf.reduce_sum(input_tensor=loss) # []
+        #entity_loss = self.get_entity_loss(entity_scores, entity_labels_mask) # []
+
+        # relation labels
+        top_span_relation_labels = self.get_relation_labels(top_span_starts, top_span_ends, \
+            relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels) # [k, k]
 
         # relation loss function
-        relation_labels_mask = self.get_relation_labels_mask(top_span_relation_labels) # [k, k, relation_classes]
-        relation_loss = self.get_relation_loss(relation_scores, relation_labels_mask) # []
+        relation_emb = self.get_relation_emb(top_span_emb) # [k, k, emb]
+        self.relation_scores = self.get_relation_scores(relation_emb) # [k, k, relation_classes]
 
+        # relation loss function
+        self.relation_labels_mask = self.get_relation_labels_mask(top_span_relation_labels) # [k, k, relation_classes]
+        relation_loss = self.get_relation_loss(self.relation_scores, self.relation_labels_mask) # []
+
+        #return [entity_scores, entity_labels_mask], entity_loss
+        return [self.relation_scores, self.relation_labels_mask], relation_loss
         #return [candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends, \
         #    top_antecedents, top_antecedent_scores], loss
-        #return [entity_scores, entity_labels_mask], relation_loss
-        return [relation_scores, relation_labels_mask], relation_loss
 
     def get_antecedent_labels(self, top_span_cluster_ids, top_antecedents, top_antecedents_mask):
         """
@@ -744,12 +744,12 @@ class EntityModel:
         classes_score = []
         for i in range(self.config['relation_classes']):
             with tf.compat.v1.variable_scope("relation_scores_{}".format(i)):
-                class_score = util_tf2.ffnn(relation_emb, self.config["entity_ffnn_depth"], self.config["entity_ffnn_size"], \
+                class_score = util_tf2.ffnn(relation_emb, self.config["relation_ffnn_size"], self.config["relation_ffnn_depth"], \
                     1, self.dropout) # [k, k, 1]
                 classes_score.append(class_score)
         
         entity_scores = tf.concat(classes_score, 2)
-        return tf.nn.softmax(entity_scores, 1)
+        return tf.nn.softmax(entity_scores, 2)
 
     def get_fast_antecedent_scores(self, top_span_emb):
         with tf.compat.v1.variable_scope("src_projection"):
@@ -863,16 +863,16 @@ class EntityModel:
         log_norm = tf.reduce_logsumexp(input_tensor=antecedent_scores, axis=[1]) # [k]
         return log_norm - marginalized_gold_scores # [k]
     
-    def entity_loss(self, entity_scores, entity_labels):
+    def get_entity_loss(self, entity_scores, entity_labels):
         """
         Args:
             entity_scores: [k, num_classes],
             entity_labels: [k, num_classes], binary matrix
         Returns:
-            loss: [k]
+            loss: []
         """
         score_tensor = entity_scores * entity_labels # [k, num_classes]
-        return -tf.math.log(tf.reduce_sum(score_tensor, axis=1))
+        return tf.reduce_sum(-tf.math.log(tf.reduce_sum(score_tensor, axis=1)))
 
     def get_relation_loss(self, relation_scores, relation_labels_mask):
         """
@@ -880,10 +880,10 @@ class EntityModel:
             relation_scores: [k, k, relation_classes]
             relation_labels_mask: [k, k, relation_classes]
         Returns:
-            loss: [k, k]
+            loss: []
         """
         score_tensor = relation_scores * relation_labels_mask
-        return tf.reduce_sum(score_tensor)
+        return tf.reduce_sum(-tf.math.log(tf.reduce_sum(score_tensor, axis=2) + 1e-8))
 
     ### evaluate ###
     def get_predicted_antecedents(self, antecedents, antecedent_scores):
@@ -991,3 +991,17 @@ class EntityModel:
         
         return entity_evaluator.calc_f1(), entity_evaluator.calc_accuracy()
 
+    def evaluate_relation(self, session):
+        self.load_eval_data()
+
+        relation_evaluator = RelationEvaluator()
+
+        for example_num, (tensorized_example, example) in enumerate(self.eval_data):
+            feed_dict = {i:t for i, t in zip(self.input_tensors, tensorized_example)}
+            relation_scores, relation_mask = session.run(self.predictions, feed_dict=feed_dict)
+            relation_evaluator.merge_input(relation_scores, relation_mask)
+
+            if example_num % 10 == 0:
+                print("Evaluated {}/{} examples.".format(example_num, len(self.eval_data)))
+        
+        return relation_evaluator.calc_f1(), relation_evaluator.calc_accuracy()
