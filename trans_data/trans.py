@@ -108,8 +108,13 @@ if __name__ == '__main__':
     #for name in names:
     #    add_speaker(name)
 
-    entity_map, relation_map = get_labels(names)
-    for name in names:
-        flatten_entity_relation(name)
+    #entity_map, relation_map = get_labels(names)
+    #for name in names:
+    #    flatten_entity_relation(name)
+
+    with open('data/json/old-data/test.json', 'r') as f:
+        for line in f:
+            body = json.loads(line)
+            print(body['doc_key'])
 
 

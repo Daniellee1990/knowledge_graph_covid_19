@@ -23,7 +23,7 @@ from relation_eval import RelationEvaluator
 from tensorflow.python.keras.backend import set_session
 tf.compat.v1.disable_eager_execution()
 
-class EntityModel:
+class EntityRecModel:
     def __init__(self, config):
         self.config = config
         self.context_embeddings = util_tf2.EmbeddingDictionary(config["context_embeddings"])
@@ -31,12 +31,11 @@ class EntityModel:
         self.char_embedding_size = config["char_embedding_size"]
         self.char_dict = util_tf2.load_char_dict(config["char_vocab_path"])
         self.max_span_width = config["max_span_width"]
-        self.genres = { g:i for i,g in enumerate(config["genres"]) }
 
         if config["lm_path"]:
             self.lm_file = h5py.File(self.config["lm_path"], "r")
-        else:
-            self.lm_file = None
+        # else:
+        self.lm_file = None
         
         self.lm_layers = self.config["lm_layers"]
         self.lm_size = self.config["lm_size"]
@@ -50,21 +49,10 @@ class EntityModel:
         input_props.append((tf.float32, [None, None, self.lm_size, self.lm_layers])) # LM embeddings.
         input_props.append((tf.int32, [None, None, None])) # Character indices.
         input_props.append((tf.int32, [None])) # Text lengths.
-        input_props.append((tf.int32, [None])) # Speaker IDs.
-        input_props.append((tf.int32, [])) # Genre.
         input_props.append((tf.bool, [])) # Is training.
         input_props.append((tf.int32, [None])) # entity_starts
         input_props.append((tf.int32, [None])) # entity_ends
         input_props.append((tf.int32, [None])) # entity_labels
-        input_props.append((tf.int32, [None])) # relation1_starts,
-        input_props.append((tf.int32, [None])) # relation1_ends,
-        input_props.append((tf.int32, [None])) # relation2_starts,
-        input_props.append((tf.int32, [None])) # relation2_ends,
-
-        input_props.append((tf.int32, [None])) # relation_labels,
-        input_props.append((tf.int32, [None])) # Gold starts.
-        input_props.append((tf.int32, [None])) # Gold ends.
-        input_props.append((tf.int32, [None])) # Cluster ids.
 
         return input_props
 
@@ -150,34 +138,13 @@ class EntityModel:
             lm_emb: (num_sentence * max_sentence_length * lm_size * lm_layers) ,ELMo embedding
             char_index: (num_sentence * max_sentence_length * max_word_length)
             text_len: [num_sentence], length of every sentence
-            speaker_ids: [total_word], every word belong to which speaker
-            genre: int, genre index
             is_training: boolean
             entity_starts: [num_entity], start indices of entities
             entity_ends: [num_entity], end indices of entities
             entity_labels: [num_entity]
-            relation1_starts: [num_relation],
-            relation1_ends: [num_relation],
-            relation2_starts: [num_relation],
-            relation2_ends: [num_relation],
-            relation_labels: [num_relation]
-            gold_starts: start indices of mentions
-            gold_ends, end indices of mentions
-            cluster_ids: set
         """
-        clusters = example["clusters"]
-
-        gold_mentions = sorted(tuple(m) for m in util_tf2.flatten(clusters))
-        gold_mention_map = {m:i for i,m in enumerate(gold_mentions)}
-        cluster_ids = np.zeros(len(gold_mentions))
-        for cluster_id, cluster in enumerate(clusters):
-            for mention in cluster:
-                cluster_ids[gold_mention_map[tuple(mention)]] = cluster_id + 1
-
         sentences = example["sentences"]
         num_words = sum(len(s) for s in sentences)
-        speakers = util_tf2.flatten(example["speakers"])
-
         max_sentence_length = max(len(s) for s in sentences)
         max_word_length = max(max(max(len(w) for w in s) for s in sentences), max(self.config["filter_widths"]))
         text_len = np.array([len(s) for s in sentences])
@@ -193,30 +160,17 @@ class EntityModel:
                 char_index[i, j, :len(word)] = [self.char_dict[c] for c in word]
         
         tokens = np.array(tokens)
-
-        speaker_dict = { s:i for i,s in enumerate(set(speakers)) }
-        speaker_ids = np.array([speaker_dict[s] for s in speakers])
-
-        doc_key = example["doc_key"]
-        genre = self.genres.get(doc_key[:2], len(self.genres) - 1)
-        gold_starts, gold_ends = self.tensorize_mentions(gold_mentions)
         
         entity_starts = np.array(example['entity_starts'])
         entity_ends = np.array(example['entity_ends'])
         entity_labels = np.array(example['entity_labels'])
-        
-        relation1_starts = np.array(example['relation1_starts'])
-        relation1_ends = np.array(example['relation1_ends'])
-        relation2_starts = np.array(example['relation2_starts'])
-        relation2_ends = np.array(example['relation2_ends'])
-        relation_labels = np.array(example['relation_labels'])
 
         # ELMo embedding
+        doc_key = example["doc_key"]
         lm_emb = self.load_lm_embeddings(doc_key)
 
         example_tensors = (tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-            text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
-                relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels, gold_starts, gold_ends, cluster_ids)
+            text_len, is_training, entity_starts, entity_ends, entity_labels)
         
         if is_training and len(sentences) > self.config["max_training_sentences"]:
             return self.truncate_example(*example_tensors)
@@ -224,8 +178,7 @@ class EntityModel:
             return example_tensors
     
     def truncate_example(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-        text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
-            relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
+        text_len, is_training, entity_starts, entity_ends, entity_labels):
         max_training_sentences = self.config["max_training_sentences"]
         num_sentences = context_word_emb.shape[0]
         assert num_sentences > max_training_sentences
@@ -240,20 +193,11 @@ class EntityModel:
         char_index = char_index[sentence_offset:sentence_offset + max_training_sentences, :, :]
         text_len = text_len[sentence_offset:sentence_offset + max_training_sentences]
 
-        speaker_ids = speaker_ids[word_offset: word_offset + num_words]
-        gold_spans = np.logical_and(gold_ends >= word_offset, gold_starts < word_offset + num_words)
-        gold_starts = gold_starts[gold_spans] - word_offset
-        gold_ends = gold_ends[gold_spans] - word_offset
-        cluster_ids = cluster_ids[gold_spans]
-
         return tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-            text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
-                relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels, \
-                    gold_starts, gold_ends, cluster_ids
+            text_len, is_training, entity_starts, entity_ends, entity_labels
     
     def get_predictions_and_loss(self, tokens, context_word_emb, head_word_emb, lm_emb, char_index, \
-        text_len, speaker_ids, genre, is_training, entity_starts, entity_ends, entity_labels, \
-            relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels, gold_starts, gold_ends, cluster_ids):
+        text_len, is_training, entity_starts, entity_ends, entity_labels):
         
         self.dropout = self.get_dropout(self.config["dropout_rate"], is_training)
         self.lexical_dropout = self.get_dropout(self.config["lexical_dropout_rate"], is_training)
@@ -283,6 +227,7 @@ class EntityModel:
         
         # ELMo embedding
         # lm_emb: [num_sentence, max_sentence_length, lm_size, lm_layers]
+        """
         lm_emb_size = util_tf2.shape(lm_emb, 2)
         lm_num_layers = util_tf2.shape(lm_emb, 3)
         with tf.compat.v1.variable_scope("lm_aggregation"):
@@ -295,6 +240,7 @@ class EntityModel:
         aggregated_lm_emb = tf.reshape(flattened_aggregated_lm_emb, [num_sentences, max_sentence_length, lm_emb_size])
         aggregated_lm_emb *= self.lm_scaling
         context_emb_list.append(aggregated_lm_emb)
+        """
 
         # concatenate embeddings
         context_emb = tf.concat(context_emb_list, 2) # [num_sentences, max_sentence_length, emb]
@@ -314,8 +260,6 @@ class EntityModel:
         # every word gets an embedding
         context_outputs = self.lstm_contextualize(context_emb, text_len, text_len_mask) # [num_words, emb]
         num_words = util_tf2.shape(context_outputs, 0)
-
-        genre_emb = tf.gather(tf.compat.v1.get_variable("genre_embeddings", [len(self.genres), self.config["feature_size"]]), genre) # [emb]
 
         # handle spans
         sentence_indices = tf.tile(tf.expand_dims(tf.range(num_sentences), 1), [1, max_sentence_length]) # [num_sentences, max_sentence_length]
@@ -341,8 +285,6 @@ class EntityModel:
         # [num_candidates]
 
         # get labels
-        candidate_cluster_ids = self.get_candidate_labels(candidate_starts, candidate_ends, gold_starts, gold_ends, cluster_ids)
-        # [num_candidates]
         candidate_entity_labels = self.get_entity_labels(candidate_starts, candidate_ends, entity_starts, entity_ends, entity_labels)
         # [num_candidates]
 
@@ -366,93 +308,17 @@ class EntityModel:
         top_span_starts = tf.gather(candidate_starts, top_span_indices) # [k]
         top_span_ends = tf.gather(candidate_ends, top_span_indices) # [k]
         top_span_emb = tf.gather(candidate_span_emb, top_span_indices) # [k, emb]
-        top_span_cluster_ids = tf.gather(candidate_cluster_ids, top_span_indices) # [k]
         top_span_mention_scores = tf.gather(candidate_mention_scores, top_span_indices) # [k]
         top_span_sentence_indices = tf.gather(candidate_sentence_indices, top_span_indices) # [k]
-        top_span_speaker_ids = tf.gather(speaker_ids, top_span_starts) # [k]
-        
         top_span_entity_labels = tf.gather(candidate_entity_labels, top_span_indices) # [k]
 
-        # check antecedents
-        c = tf.minimum(self.config["max_top_antecedents"], k)
-        # c: number of antecedents
-
-        # print('test config', self.config['coarse_to_fine'])
-        if self.config["coarse_to_fine"]:
-            top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
-                self.coarse_to_fine_pruning(top_span_emb, top_span_mention_scores, c)
-        else:
-            top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets = \
-                self.distance_pruning(top_span_emb, top_span_mention_scores, c)
-
-        # co-reference loss function
-        '''
-        dummy_scores = tf.zeros([k, 1]) # [k, 1]
-        for i in range(self.config["coref_depth"]):
-            with tf.compat.v1.variable_scope("coref_layer", reuse=(i > 0)):
-                top_antecedent_emb = tf.gather(top_span_emb, top_antecedents) # [k, c, emb]
-                top_slow_antecedent_scores = self.get_slow_antecedent_scores(top_span_emb, top_antecedents, top_antecedent_emb, \
-                        top_antecedent_offsets, top_span_speaker_ids, genre_emb) # [k, c]
-                top_antecedent_scores = top_fast_antecedent_scores + top_slow_antecedent_scores # [k, c]
-                
-                top_antecedent_weights = tf.nn.softmax(tf.concat([dummy_scores, top_antecedent_scores], 1)) # [k, c + 1]
-                top_antecedent_emb = tf.concat([tf.expand_dims(top_span_emb, 1), top_antecedent_emb], 1) # [k, c + 1, emb]
-                attended_span_emb = tf.reduce_sum(input_tensor=tf.expand_dims(top_antecedent_weights, 2) * top_antecedent_emb, axis=1) # [k, emb]
-                with tf.compat.v1.variable_scope("f"):
-                    f = tf.sigmoid(util_tf2.projection(tf.concat([top_span_emb, attended_span_emb], 1), \
-                        util_tf2.shape(top_span_emb, -1))) # [k, emb]
-                    top_span_emb = f * attended_span_emb + (1 - f) * top_span_emb # [k, emb]
-
-        top_antecedent_scores = tf.concat([dummy_scores, top_antecedent_scores], 1) # [k, c + 1]
-        # get candidates label
-        self.top_antecedent_labels = self.get_antecedent_labels(top_span_cluster_ids, top_antecedents, top_antecedents_mask)
-        '''
-
-        #loss = self.softmax_loss(top_antecedent_scores, self.top_antecedent_labels) # [k]
-        #loss = tf.reduce_sum(input_tensor=loss) # []
-
         # entity scores
-        entity_scores = self.get_entity_scores(top_span_emb)
-        entity_labels_mask = self.get_entity_label_mask(top_span_entity_labels)
-
+        self.entity_scores = self.get_entity_scores(top_span_emb)
+        self.entity_labels_mask = self.get_entity_label_mask(top_span_entity_labels)
         # entity loss function
-        entity_loss = self.get_entity_loss(entity_scores, entity_labels_mask) # []
+        entity_loss = self.get_entity_loss(self.entity_scores, self.entity_labels_mask) # []
 
-        # relation labels
-        #top_span_relation_labels = self.get_relation_labels(top_span_starts, top_span_ends, \
-        #    relation1_starts, relation1_ends, relation2_starts, relation2_ends, relation_labels) # [k, k]
-
-        # relation loss function
-        #relation_emb = self.get_relation_emb(top_span_emb) # [k, k, emb]
-        #self.relation_scores = self.get_relation_scores(relation_emb) # [k, k, relation_classes]
-
-        # relation loss function
-        #self.relation_labels_mask = self.get_relation_labels_mask(top_span_relation_labels) # [k, k, relation_classes]
-        #relation_loss = self.get_relation_loss(self.relation_scores, self.relation_labels_mask) # []
-
-        return [entity_scores, entity_labels_mask], entity_loss
-        #return [self.relation_scores, self.relation_labels_mask], relation_loss
-        #return [candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends, \
-        #    top_antecedents, top_antecedent_scores], loss
-
-    def get_antecedent_labels(self, top_span_cluster_ids, top_antecedents, top_antecedents_mask):
-        """
-        Args:
-            top_span_cluster_ids: [k], cluster of spans
-            top_antecedents: [k, c], index of antecedents for every span
-            top_antecedents_mask: [k, c], pair validation indicator
-        Returns:
-            top_antecedent_labels: [k, c+1]
-        """
-        top_antecedent_cluster_ids = tf.gather(top_span_cluster_ids, top_antecedents) # [k, c]
-        top_antecedent_cluster_ids += tf.cast(tf.math.log(tf.cast(top_antecedents_mask, dtype=tf.float32)), dtype=tf.int32) # [k, c]
-        same_cluster_indicator = tf.equal(top_antecedent_cluster_ids, tf.expand_dims(top_span_cluster_ids, 1)) # [k, c]
-        non_dummy_indicator = tf.expand_dims(top_span_cluster_ids > 0, 1) # [k, 1]
-        pairwise_labels = tf.logical_and(same_cluster_indicator, non_dummy_indicator) # [k, c]
-        dummy_labels = tf.logical_not(tf.reduce_any(input_tensor=pairwise_labels, axis=1, keepdims=True)) # [k, 1]
-        top_antecedent_labels = tf.concat([dummy_labels, pairwise_labels], 1) # [k, c + 1]
-
-        return top_antecedent_labels
+        return [self.entity_scores, self.entity_labels_mask], entity_loss
 
     def lstm_contextualize(self, text_emb, text_len, text_len_mask):
         """ bi-directional lstm nn
@@ -535,44 +401,6 @@ class EntityModel:
         candidate_entity_labels = tf.matmul(tf.expand_dims(entity_labels, 0), tf.cast(same_span, dtype=tf.int32))
         candidate_entity_labels = tf.squeeze(candidate_entity_labels, 0)
         return candidate_entity_labels
-    
-    def get_relation_labels(self, candidate_starts, candidate_ends, relation1_starts, relation1_ends, \
-        relation2_starts, relation2_ends, relation_labels):
-        """
-        Args:
-            candidate_starts: [k],
-            candidate_ends: [k],
-            relation1_starts: [num_labels],
-            relation1_ends: [num_labels],
-            relation2_starts: [num_labels],
-            relation2_ends: [num_labels],
-            relation_labels: [num_labels]
-        Returns:
-            relation_labels_tensor: [k, k]
-        """
-        same_starts_1 = tf.equal(tf.expand_dims(relation1_starts, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
-        same_ends_1 = tf.equal(tf.expand_dims(relation1_ends, 1), tf.expand_dims(candidate_ends, 0)) # [num_labels, k]
-        same_span_1 = tf.logical_and(same_starts_1, same_ends_1) # [num_labels, k]
-        same_starts_2 = tf.equal(tf.expand_dims(relation2_starts, 1), tf.expand_dims(candidate_starts, 0)) # [num_labels, k]
-        same_ends_2 = tf.equal(tf.expand_dims(relation2_ends, 1), tf.expand_dims(candidate_ends, 0)) # [num_labels, k]
-        same_span_2 = tf.logical_and(same_starts_2, same_ends_2) # [num_labels, k]
-
-        same_span = tf.logical_or(same_span_1, same_span_2) # [num_labels, k]
-        same_span = tf.cast(same_span, tf.int32) # [num_labels, k]
-
-        relation_values, relation_index = tf.nn.top_k(same_span, 2, sorted=False) # [num_labels, 2], [num_labels, 2]
-        relation_sum = tf.reduce_sum(relation_values, axis=1) # [num_labels]
-        relation_mask = relation_sum >= 2 # [num_labels]
-
-        positive_relation_index = tf.cast(tf.boolean_mask(relation_index, relation_mask), dtype=tf.int64) # [positive_num_labels, 2]
-        positive_relation_labels = tf.cast(tf.boolean_mask(relation_labels, relation_mask), dtype=tf.int64) # [positive_num_labels]
-
-        k = util_tf2.shape(candidate_starts, 0)
-        relation_labels_tensor = tf.SparseTensor(indices=positive_relation_index, \
-            values=positive_relation_labels, dense_shape=[k, k]) # [k, k]
-        # reorder
-        relation_labels_tensor = tf.sparse.reorder(relation_labels_tensor)
-        return tf.sparse.to_dense(relation_labels_tensor)
 
     def get_span_emb(self, head_emb, context_outputs, span_starts, span_ends):
         """
@@ -701,107 +529,11 @@ class EntityModel:
         entity_labels_mask = tf.equal(entity_index, entity_labels)
         return tf.cast(entity_labels_mask, dtype=tf.float32)
 
-    def get_relation_emb(self, span_emb):
-        """
-        Args:
-            span_emb: [k, emb]
-        Returns:
-            relation_emb: [k, k, emb]
-        """
-        k = util_tf2.shape(span_emb, 0)
-        relation_index1 = tf.tile(tf.expand_dims(tf.range(k), 1), [1, k]) # [k, k]
-        relation_index2 = tf.tile(tf.expand_dims(tf.range(k), 0), [k, 1]) # [k, k]
-
-        relation_emb1 = tf.gather(span_emb, relation_index1) # [k, k, emb]
-        relation_emb2 = tf.gather(span_emb, relation_index2) # [k, k, emb]
-        multi_emb = relation_emb1 * relation_emb2 # [k, k, emb]
-
-        relation_emb = tf.concat([relation_emb1, relation_emb2, multi_emb], 2) # [k, k, emb]
-        return relation_emb
-
-    def get_relation_labels_mask(self, relation_labels):
-        """
-        Args:
-            relation_labels: [k, k]
-        Returns:
-            relation_labels_mask: [k, k, relation_classes]
-        """
-        k = util_tf2.shape(relation_labels, 0)
-        relation_mask = tf.tile(tf.expand_dims(tf.expand_dims(tf.range(self.config['relation_classes']), 0), 0), [k, k, 1])
-        relation_extend_labels = tf.tile(tf.expand_dims(relation_labels, 2), [1, 1, self.config['relation_classes']])
-        relation_extend_labels = tf.cast(relation_extend_labels, dtype=tf.int32)
-        relation_labels_mask = tf.equal(relation_extend_labels, relation_mask)
-        return tf.cast(relation_labels_mask, dtype=tf.float32)
-
-    def get_relation_scores(self, relation_emb):
-        """
-        Args:
-            relation_emb: [k, k, emb]
-        Returns:
-            relation_scores: [k, k, relation_classes]
-        """
-        # every class have a FFNN
-        classes_score = []
-        for i in range(self.config['relation_classes']):
-            with tf.compat.v1.variable_scope("relation_scores_{}".format(i)):
-                class_score = util_tf2.ffnn(relation_emb, self.config["relation_ffnn_size"], self.config["relation_ffnn_depth"], \
-                    1, self.dropout) # [k, k, 1]
-                classes_score.append(class_score)
-        
-        entity_scores = tf.concat(classes_score, 2)
-        return tf.nn.softmax(entity_scores, 2)
-
     def get_fast_antecedent_scores(self, top_span_emb):
         with tf.compat.v1.variable_scope("src_projection"):
             source_top_span_emb = tf.nn.dropout(util_tf2.projection(top_span_emb, util_tf2.shape(top_span_emb, -1)), 1 - (self.dropout)) # [k, emb]
         target_top_span_emb = tf.nn.dropout(top_span_emb, 1 - (self.dropout)) # [k, emb]
         return tf.matmul(source_top_span_emb, target_top_span_emb, transpose_b=True) # [k, k]
-
-    def get_slow_antecedent_scores(self, top_span_emb, top_antecedents, top_antecedent_emb, \
-        top_antecedent_offsets, top_span_speaker_ids, genre_emb):
-        """
-        Args:
-            top_span_emb: [k, emb],
-            top_antecedents: [k, c],
-            top_antecedent_emb: [k, c, emb],
-            top_antecedent_offsets: [k, c],
-            top_span_speaker_ids: [k],
-            genre_emb: genre embedding
-        """
-        k = util_tf2.shape(top_span_emb, 0)
-        c = util_tf2.shape(top_antecedents, 1)
-
-        feature_emb_list = []
-
-        if self.config["use_metadata"]:
-            top_antecedent_speaker_ids = tf.gather(top_span_speaker_ids, top_antecedents) # [k, c]
-            same_speaker = tf.equal(tf.expand_dims(top_span_speaker_ids, 1), top_antecedent_speaker_ids) # [k, c]
-            speaker_pair_emb = tf.gather(tf.compat.v1.get_variable("same_speaker_emb", [2, self.config["feature_size"]]), \
-                tf.cast(same_speaker, dtype=tf.int32)) # [k, c, emb]
-            feature_emb_list.append(speaker_pair_emb)
-
-            tiled_genre_emb = tf.tile(tf.expand_dims(tf.expand_dims(genre_emb, 0), 0), [k, c, 1]) # [k, c, emb]
-            feature_emb_list.append(tiled_genre_emb)
-
-        if self.config["use_features"]:
-            antecedent_distance_buckets = self.bucket_distance(top_antecedent_offsets) # [k, c]
-            antecedent_distance_emb = tf.gather(tf.compat.v1.get_variable("antecedent_distance_emb", \
-                [10, self.config["feature_size"]]), antecedent_distance_buckets) # [k, c]? [k, c, emb]?
-            feature_emb_list.append(antecedent_distance_emb)
-
-        feature_emb = tf.concat(feature_emb_list, 2) # [k, c, emb]
-        feature_emb = tf.nn.dropout(feature_emb, 1 - (self.dropout)) # [k, c, emb]
-
-        target_emb = tf.expand_dims(top_span_emb, 1) # [k, 1, emb]
-        similarity_emb = top_antecedent_emb * target_emb # [k, c, emb]
-        target_emb = tf.tile(target_emb, [1, c, 1]) # [k, c, emb]
-
-        pair_emb = tf.concat([target_emb, top_antecedent_emb, similarity_emb, feature_emb], 2) # [k, c, emb]
-
-        with tf.compat.v1.variable_scope("slow_antecedent_scores"):
-            slow_antecedent_scores = util_tf2.ffnn(pair_emb, self.config["ffnn_depth"], self.config["ffnn_size"], 1, self.dropout) # [k, c, 1]
-        slow_antecedent_scores = tf.squeeze(slow_antecedent_scores, 2) # [k, c]
-        return slow_antecedent_scores # [k, c]
 
     def cnn(self, inputs, filter_sizes, num_filters):
         """ concatenate 3 conv1d layer output
@@ -872,18 +604,7 @@ class EntityModel:
             loss: []
         """
         score_tensor = entity_scores * entity_labels # [k, num_classes]
-        return tf.reduce_sum(-tf.math.log(tf.reduce_sum(score_tensor, axis=1)))
-
-    def get_relation_loss(self, relation_scores, relation_labels_mask):
-        """
-        Args:
-            relation_scores: [k, k, relation_classes]
-            relation_labels_mask: [k, k, relation_classes]
-        Returns:
-            loss: []
-        """
-        score_tensor = relation_scores * relation_labels_mask
-        return tf.reduce_sum(-tf.math.log(tf.reduce_sum(score_tensor, axis=2) + 1e-8))
+        return tf.reduce_sum(-tf.math.log(tf.reduce_sum(score_tensor, axis=1) + 1e-8))
 
     ### evaluate ###
     def get_predicted_antecedents(self, antecedents, antecedent_scores):
@@ -919,17 +640,6 @@ class EntityModel:
 
         return predicted_clusters, mention_to_predicted
 
-    def evaluate_coref(self, top_span_starts, top_span_ends, predicted_antecedents, gold_clusters, evaluator):
-        gold_clusters = [tuple(tuple(m) for m in gc) for gc in gold_clusters]
-        mention_to_gold = {}
-        for gc in gold_clusters:
-            for mention in gc:
-                mention_to_gold[mention] = gc
-
-        predicted_clusters, mention_to_predicted = self.get_predicted_clusters(top_span_starts, top_span_ends, predicted_antecedents)
-        evaluator.update(predicted_clusters, gold_clusters, mention_to_predicted, mention_to_gold)
-        return predicted_clusters
-
     def load_eval_data(self):
         if self.eval_data is None:
             def load_line(line):
@@ -941,40 +651,6 @@ class EntityModel:
             
             num_words = sum(tensorized_example[2].sum() for tensorized_example, _ in self.eval_data)
             print("Loaded {} eval examples.".format(len(self.eval_data)))
-
-    
-
-    def evaluate(self, session, official_stdout=False):
-        self.load_eval_data()
-
-        coref_predictions = {}
-        coref_evaluator = metrics.CorefEvaluator()
-
-        for example_num, (tensorized_example, example) in enumerate(self.eval_data):
-            _, _, _, _, _, _, _, _, _, gold_starts, gold_ends, _ = tensorized_example
-            feed_dict = {i:t for i,t in zip(self.input_tensors, tensorized_example)}
-            candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends, top_antecedents, top_antecedent_scores = \
-                session.run(self.predictions, feed_dict=feed_dict)
-            predicted_antecedents = self.get_predicted_antecedents(top_antecedents, top_antecedent_scores)
-            coref_predictions[example["doc_key"]] = self.evaluate_coref(top_span_starts, top_span_ends, predicted_antecedents, example["clusters"], coref_evaluator)
-            if example_num % 10 == 0:
-                print("Evaluated {}/{} examples.".format(example_num + 1, len(self.eval_data)))
-
-        summary_dict = {}
-        conll_results = conll.evaluate_conll(self.config["conll_eval_path"], coref_predictions, official_stdout)
-        average_f1 = sum(results["f"] for results in conll_results.values()) / len(conll_results)
-        summary_dict["Average F1 (conll)"] = average_f1
-        print("Average F1 (conll): {:.2f}%".format(average_f1))
-
-        p,r,f = coref_evaluator.get_prf()
-        summary_dict["Average F1 (py)"] = f
-        print("Average F1 (py): {:.2f}%".format(f * 100))
-        summary_dict["Average precision (py)"] = p
-        print("Average precision (py): {:.2f}%".format(p * 100))
-        summary_dict["Average recall (py)"] = r
-        print("Average recall (py): {:.2f}%".format(r * 100))
-
-        return util_tf2.make_summary(summary_dict), average_f1
     
     def evaluate_entity(self, session):
         self.load_eval_data()
@@ -990,18 +666,3 @@ class EntityModel:
                 print("Evaluated {}/{} examples.".format(example_num, len(self.eval_data)))
         
         return entity_evaluator.calc_f1(), entity_evaluator.calc_accuracy()
-
-    def evaluate_relation(self, session):
-        self.load_eval_data()
-
-        relation_evaluator = RelationEvaluator()
-
-        for example_num, (tensorized_example, example) in enumerate(self.eval_data):
-            feed_dict = {i:t for i, t in zip(self.input_tensors, tensorized_example)}
-            relation_scores, relation_mask = session.run(self.predictions, feed_dict=feed_dict)
-            relation_evaluator.merge_input(relation_scores, relation_mask)
-
-            if example_num % 10 == 0:
-                print("Evaluated {}/{} examples.".format(example_num, len(self.eval_data)))
-        
-        return relation_evaluator.calc_f1(), relation_evaluator.calc_accuracy()

@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import tensorflow as tf
 from tensorflow.python.keras.backend import set_session
+from entity_recog_model import EntityRecModel
 import entity_model_tf2 as em
 import util_tf2
 
@@ -23,7 +24,8 @@ if __name__ == "__main__":
     report_frequency = config["report_frequency"]
     eval_frequency = config["eval_frequency"]
 
-    model = em.EntityModel(config)
+    # model = em.EntityModel(config)
+    model = EntityRecModel(config)
 
     log_dir = config["log_dir"]
     writer = tf.compat.v1.summary.FileWriter(log_dir, flush_secs=30, filename_suffix='train')
@@ -49,23 +51,22 @@ if __name__ == "__main__":
         initial_time = time.time()
         LIMIT = 7000
         while True:
-            #print(123)
-            #time.sleep(5)
-            tf_loss, tf_global_step, relation_labels_mask, relation_scores, _ = \
-                session.run([model.loss, model.global_step, model.relation_labels_mask, model.relation_scores, model.train_op])
+            try:
+                tf_loss, tf_global_step, entity_scores, entity_labels, _ = \
+                    session.run([model.loss, model.global_step, model.entity_scores, model.entity_labels_mask, model.train_op])
+            except Exception as e:
+                print('failed to train batch: {}'.format(e))
+                continue
+            
             accumulated_loss += tf_loss
 
             #print('test labels\n', tf_coref_labels)
-            print('training literature: {}'.format(tf_global_step))
-            #print('test relations')
-            #print(relation_scores.shape, relation_labels_mask.shape)
-            #print(relation_labels)
+            #print('test entity')
+            #print(entity_scores)
+            #print(entity_labels)
 
-            print('test loss', tf_loss)
-            for i in range(relation_scores.shape[0]):
-                for j in range(relation_scores.shape[1]):
-                    if math.isnan(sum(relation_scores[i][j])):
-                        print('error!!!', relation_scores[i][j])
+            print('training literature: {}'.format(tf_global_step))
+            print('loss: {}'.format(tf_loss))
 
             if tf_global_step > 0 and tf_global_step % report_frequency == 0:
                 total_time = time.time() - initial_time
@@ -79,8 +80,11 @@ if __name__ == "__main__":
             # evaluate
             if tf_global_step > 0 and tf_global_step % eval_frequency == 0:
                 # eval_summary, eval_f1 = model.evaluate(session)
-                #eval_f1, eval_acc = model.evaluate_entity(session)
-                eval_f1, eval_acc = model.evaluate_relation(session)
+                
+                # evaludate entity
+                eval_f1, eval_acc = model.evaluate_entity(session)
+                # evaluate relation
+                #eval_f1, eval_acc = model.evaluate_relation(session)
 
                 if eval_f1 > max_f1:
                     max_f1 = eval_f1
