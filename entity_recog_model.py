@@ -34,8 +34,8 @@ class EntityRecModel:
 
         if config["lm_path"]:
             self.lm_file = h5py.File(self.config["lm_path"], "r")
-        # else:
-        self.lm_file = None
+        else:
+            self.lm_file = None
         
         self.lm_layers = self.config["lm_layers"]
         self.lm_size = self.config["lm_size"]
@@ -227,7 +227,6 @@ class EntityRecModel:
         
         # ELMo embedding
         # lm_emb: [num_sentence, max_sentence_length, lm_size, lm_layers]
-        """
         lm_emb_size = util_tf2.shape(lm_emb, 2)
         lm_num_layers = util_tf2.shape(lm_emb, 3)
         with tf.compat.v1.variable_scope("lm_aggregation"):
@@ -240,7 +239,6 @@ class EntityRecModel:
         aggregated_lm_emb = tf.reshape(flattened_aggregated_lm_emb, [num_sentences, max_sentence_length, lm_emb_size])
         aggregated_lm_emb *= self.lm_scaling
         context_emb_list.append(aggregated_lm_emb)
-        """
 
         # concatenate embeddings
         context_emb = tf.concat(context_emb_list, 2) # [num_sentences, max_sentence_length, emb]

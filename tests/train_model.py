@@ -7,6 +7,7 @@ import os
 import time
 import sys
 import math
+import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -49,7 +50,7 @@ if __name__ == "__main__":
         session.run(tf.compat.v1.global_variables_initializer())
 
         initial_time = time.time()
-        LIMIT = 7000
+        LIMIT = 75000
         while True:
             try:
                 tf_loss, tf_global_step, entity_scores, entity_labels, _ = \
@@ -63,7 +64,10 @@ if __name__ == "__main__":
             #print('test labels\n', tf_coref_labels)
             #print('test entity')
             #print(entity_scores)
-            #print(entity_labels)
+            #print(entity_labels.shape)
+            #for r in entity_labels:
+            #    if np.argmax(r) != 0:
+            #        print('real label found!')
 
             print('training literature: {}'.format(tf_global_step))
             print('loss: {}'.format(tf_loss))

@@ -57,6 +57,6 @@ if __name__ == "__main__":
     token_ph, len_ph, lm_emb = build_elmo()
     with tf.compat.v1.Session() as session:
         session.run(tf.compat.v1.global_variables_initializer())
-        with h5py.File("elmo_cache.hdf5", "w") as out_file:
+        with h5py.File("elmo_cache_1000.hdf5", "w") as out_file:
             for json_filename in sys.argv[1:]:
                 cache_dataset(json_filename, session, token_ph, len_ph, lm_emb, out_file)
